@@ -1,0 +1,145 @@
+name: Build macOS ARM64 preview
+
+on:
+  push:
+    branches: [prepare/beta74-mod1]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-arm64-preview-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  SOURCE_SHA: ${{ github.sha }}
+  VERSION: 0.1.0-beta.74.mod1
+
+jobs:
+  release:
+    name: Build and verify Apple Silicon preview
+    runs-on: macos-15
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      ARCH: aarch64
+      BUNDLE: src-tauri/target/release/bundle
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.2.21
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.89
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: bun install --frozen-lockfile
+      - name: Verify source, architecture, and tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(uname -m)" = arm64
+          test "$(jq -r .version package.json)" = "$VERSION"
+          bun run typecheck
+          bun test version.test.ts create.test.ts ui.test.ts url-routing.test.ts random-fingerprint.test.ts web/url-router.test.tsx web/profile-routing-info.test.ts url-router-native.test.ts browser-order-native.test.ts
+      - name: Verify compact chooser interactions and fit
+        run: CHOOSER_ARTIFACT_DIR="$RUNNER_TEMP/chooser-ui" bun scripts/browser-chooser-acceptance.ts
+      - name: Upload chooser UI verification
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-chooser-ui
+          path: ${{ runner.temp }}/chooser-ui/
+          if-no-files-found: ignore
+      - name: Prepare macOS bundle inputs
+        run: bun run desktop:prepare:macos
+      - name: Verify native routing preferences
+        run: |
+          cargo test --manifest-path src-tauri/Cargo.toml --lib browser_order::tests
+          cargo test --manifest-path src-tauri/Cargo.toml --lib url_router::tests
+      - name: Build the app bundle
+        run: bunx tauri build --bundles app
+      # Tauri's .dmg script mounts its image, and on the Intel runner the detach always timed out
+      # ("timeout for DiskArbitration expired"). dmgbuild attaches without Finder and retries the
+      # detach to add the background and icon layout. If it still fails, hdiutil makes a plain
+      # image from a folder, so the layout can never block a release.
+      - name: Make the disk image
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(jq -er .version src-tauri/tauri.conf.json)"
+          mkdir -p "$BUNDLE/dmg"
+          dmg="$BUNDLE/dmg/AliasMode_${version}_${ARCH}.dmg"
+          venv="$RUNNER_TEMP/dmgbuild"
+          if python3 -m venv "$venv" &&
+            "$venv/bin/pip" install --quiet --require-hashes --only-binary :all: -r src-tauri/macos/dmg-requirements.txt &&
+            "$venv/bin/dmgbuild" -s src-tauri/macos/dmg-settings.py \
+              -D app="$BUNDLE/macos/AliasMode.app" -D background=src-tauri/macos/dmg-background.png \
+              AliasMode "$dmg"; then
+            echo "dmgbuild made the styled disk image"
+          else
+            echo "::warning::dmgbuild failed; making a plain disk image"
+            stage="$RUNNER_TEMP/dmg-stage"
+            mkdir -p "$stage"
+            ditto "$BUNDLE/macos/AliasMode.app" "$stage/AliasMode.app"
+            ln -s /Applications "$stage/Applications"
+            for attempt in 1 2 3; do
+              hdiutil create -volname AliasMode -srcfolder "$stage" -fs HFS+ -format UDZO -ov "$dmg" && break
+              [[ "$attempt" == 3 ]] && exit 1
+              sleep 30
+            done
+          fi
+          hdiutil verify "$dmg"
+      - name: Verify bundle layout and signatures
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="$BUNDLE/macos/AliasMode.app"
+          ls -la "$app/Contents/MacOS" "$app/Contents/Resources"
+          for file in aliasmode aliasmode-sidecar aliasmode-mcp; do
+            test -x "$app/Contents/MacOS/$file"
+          done
+          test -x "$app/Contents/Resources/playwright/node/node"
+          # Python scripts download their runtime on first use; the app carries no Python.
+          test ! -e "$app/Contents/Resources/playwright/python"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign --verify --deep --strict --verbose=2 "$app/Contents/Resources/firefox/AliasMode.app"
+          codesign --display --verbose=2 "$app" 2>&1 | grep -E "Signature|flags|Identifier"
+          # An ad-hoc signature has no notarization, so Gatekeeper is expected to reject it.
+          spctl --assess --type execute -vv "$app" || true
+      - name: Package the release files
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(jq -er .version src-tauri/tauri.conf.json)"
+          files="$RUNNER_TEMP/release/v$version"
+          mkdir -p "$files"
+          cp "$BUNDLE/dmg/AliasMode_${version}_${ARCH}.dmg" "$files/"
+          tar -czf "$files/AliasMode_${version}_${ARCH}.app.tar.gz" -C "$BUNDLE/macos" AliasMode.app
+          (cd "$files" && shasum -a 256 "AliasMode_${version}_${ARCH}.app.tar.gz" "AliasMode_${version}_${ARCH}.dmg" > SHA256SUMS-macos.txt)
+          cat "$files/SHA256SUMS-macos.txt"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Verify ARM64 binaries and Rust tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="$BUNDLE/macos/AliasMode.app"
+          for file in aliasmode aliasmode-sidecar aliasmode-mcp; do
+            lipo -archs "$app/Contents/MacOS/$file" | grep -qx arm64
+          done
+          cargo test --locked --manifest-path src-tauri/Cargo.toml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aliasmode-macos-arm64
+          path: ${{ runner.temp }}/release/v${{ env.VERSION }}/
+          if-no-files-found: error
+          retention-days: 30
