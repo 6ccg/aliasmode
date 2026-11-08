@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-url-router"
+description = "Allows the main local dashboard to receive web links, open a selected installed browser, inspect the default browser, and request macOS default-browser consent."
+commands.allow = ["pending_browser_urls", "dismiss_browser_url", "installed_browsers", "validate_browser_application", "open_browser_url", "default_browser_status", "request_default_browser"]

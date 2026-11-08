@@ -1,5 +1,9 @@
 # AliasMode
 
+> **macOS local-manager fork:** adds a system-link chooser for local profiles and installed browsers, optional per-launch device fingerprint regeneration. Local networking, including Services, updates and runtime downloads, retains upstream behavior. No browser engine is forked or bundled by these changes.
+>
+> Usage and limitations: [macOS URL routing](docs/macos-url-routing.md), [fingerprint rotation](docs/random-fingerprint.md), and [Local network privacy audit (中文)](docs/local-privacy-audit.md). These changes require macOS packaging and real-device validation before release. Installing an upstream update can replace this fork's customizations.
+
 AliasMode is a free, open-source antidetect browser and local-first profile manager, with its own open-source engine, [AliasMode Firefox](https://github.com/aliasmode/aliasmode-firefox), and optional cloud synchronization for teams.
 
 > **Status:** public Windows beta. Download the current installer from [aliasmode.com/download](https://aliasmode.com/download/).

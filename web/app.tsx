@@ -1,3 +1,4 @@
+import { BrowserRoutingSettings, UrlRouter } from "./url-router.tsx";
 import { Channel } from "@tauri-apps/api/core";
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -170,6 +171,7 @@ const SETTINGS_TABS = [
   { key: "account", label: "Account" },
   { key: "team", label: "Workspace" },
   { key: "advanced", label: "Advanced" },
+  { key: "browser-routing", label: "Browser routing" },
 ] as const;
 
 type SettingsTab = (typeof SETTINGS_TABS)[number]["key"];
@@ -1125,6 +1127,7 @@ async function storeDesktopCloudCredentials(
 
 const BLANK_FORM = {
   name: "", engine: "chromium" as "chromium" | "firefox", chromiumRuntime: "" as "" | "aliasmode", group: "", platform: "", proxyType: "http", host: "", port: "", user: "", pass: "",
+  randomizeFingerprintOnLaunch: "false",
   screen: "", platformOs: "", customNo: "", username: "", password: "", email: "", emailPassword: "", twofa: "",
 };
 
@@ -2764,6 +2767,7 @@ function App() {
     setCreateErr(null);
     try {
       const r = await createProfile({
+        ...(!isCloudMode && !appMode?.legacyRemote ? { randomizeFingerprintOnLaunch: form.randomizeFingerprintOnLaunch === "true" } : {}),
         name: form.name,
         engine: form.engine,
         ...(form.engine === "chromium" && !appMode?.legacyRemote ? { chromiumRuntime: form.chromiumRuntime || "cloakbrowser" } : {}),
@@ -2841,6 +2845,7 @@ function App() {
           locale: p.locale ?? "",
           cores: p.cores ?? "",
           fingerprintSeed: p.fingerprintSeed ?? "",
+          randomizeFingerprintOnLaunch: String(p.randomizeFingerprintOnLaunch === true),
         });
         setEditInitialProxy({ proxy: p.proxy, proxyType: p.proxyType || "http" });
         setEditInitialFingerprint({
@@ -2947,6 +2952,7 @@ function App() {
         email: editForm.email ?? "", emailPassword: editForm.emailPassword ?? "", twofa: editForm.twofa ?? "",
         tags: editForm.tags ?? "", ...fingerprintEdits,
         ...(!isCloudMode ? { customNo: editForm.customNo ?? "" } : {}),
+        ...(!isCloudMode ? { randomizeFingerprintOnLaunch: editForm.randomizeFingerprintOnLaunch === "true" } : {}),
         ...(!sameExtensionSelection(editExts, editInitialExts) && editEngine === "chromium" ? { extensions: editExts } : {}),
       }, isCloudMode && !editLive ? editExpectedVersion ?? undefined : undefined);
       if (r.ok) {
@@ -4394,7 +4400,7 @@ function App() {
       ) : view === "settings" ? (
       <div className="workspace">
         <div className="tabs" role="tablist" aria-label={t("Settings sections")}>
-          {SETTINGS_TABS.map((tab) => (
+          {SETTINGS_TABS.filter(tab => tab.key !== "browser-routing" || (!!(window as any).__TAURI_INTERNALS__?.invoke && /Mac/.test(navigator.platform))).map((tab) => (
             <button
               key={tab.key}
               type="button"
@@ -4408,6 +4414,7 @@ function App() {
           ))}
         </div>
         <div className="settingspage">
+          {settingsTab === "browser-routing" && <BrowserRoutingSettings />}
           {settingsTab === "account" && (
             <>
               <h2 className="sect-title">{t("Account information")}</h2>
@@ -4993,6 +5000,14 @@ function App() {
                 </div>
               </details>
               <ProxyCheckFeedback hasProxy={createHasProxy} state={createProxyCheck} />
+              {!isCloudMode && !appMode?.legacyRemote && <div className="fld">
+                <label className="extchk">
+                  <input type="checkbox" checked={form.randomizeFingerprintOnLaunch === "true"} disabled={creating}
+                    onChange={event => setF("randomizeFingerprintOnLaunch", String(event.target.checked))} />
+                  <span>{t("Randomize fingerprint on each new launch")}</span>
+                </label>
+                <small className="muted">{t("Off by default. When enabled, supported device fields, screen and CPU change on each fresh launch, replacing manual device overrides. Cookies, OS, proxy and language stay unchanged. Existing logins can still identify you; changes may trigger account checks.")}</small>
+              </div>}
               <FingerprintSettings engine={form.engine} chromiumRuntime={appMode?.legacyRemote ? "" : appMode?.chromiumRuntime ?? form.chromiumRuntime} screen={form.screen} onScreenChange={(value) => setF("screen", value)} platformOs={form.platformOs} onPlatformOsChange={(value) => setF("platformOs", value)} />
             </div>
             <div className="modal-foot">
@@ -5173,6 +5188,15 @@ function App() {
                     onUndo={() => setEditForm((form) => ({ ...form, ...editInitialFingerprint }))}
                     hardware={editHardware}
                   />}
+                  {!isCloudMode && <div className="fld">
+                    <label className="extchk">
+                      <input type="checkbox" checked={editForm.randomizeFingerprintOnLaunch === "true"}
+                        disabled={editSaving || editLive}
+                        onChange={(event) => setEF("randomizeFingerprintOnLaunch", String(event.target.checked))} />
+                      <span>Randomize fingerprint on each new launch</span>
+                    </label>
+                    <small className="muted">Regenerates the supported device configuration, screen and CPU on each fresh launch, replacing manual device overrides. Firefox also rebuilds its generated graphics and device config. Keeps cookies, OS, proxy and language. Exact computer model and every hardware field cannot be randomized. Existing logins can still identify you; changes may trigger account checks. Does not affect regular external browsers.</small>
+                  </div>}
                   {editEngine === "chromium" && editExtensionChoices.length > 0 && (
                     <div className="fld">
                       <span>{t("Extensions")}</span>
@@ -5394,6 +5418,7 @@ function App() {
           </div>
         </div>
       )}
+      <UrlRouter profiles={profiles} local={appMode?.mode === "local"} />
       <ScriptRunPanel
         open={scriptRunOpen}
         selectedProfiles={scriptRunProfiles}

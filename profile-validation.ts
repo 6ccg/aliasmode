@@ -63,6 +63,9 @@ export function assertValidProfile(value: unknown): asserts value is Profile {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("profile must be an object");
   const profile = value as Record<string, unknown>;
   normalizeProfileEngine(profile.engine, profile.firefox);
+  if (profile.randomizeFingerprintOnLaunch !== undefined && typeof profile.randomizeFingerprintOnLaunch !== "boolean") {
+    throw new Error("randomizeFingerprintOnLaunch must be boolean");
+  }
   normalizeProfileHardware(profile.hardware);
   if (profile.timezoneManual !== undefined && profile.timezoneManual !== true) throw new Error("profile timezoneManual must be true when present");
   if (profile.displayScale !== undefined && !isDisplayScale(profile.displayScale)) throw new Error("profile displayScale must be a number from 1 to 5");

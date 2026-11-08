@@ -22,6 +22,8 @@ export interface NewProfileInput {
   engine?: ProfileEngine;
   /** "aliasmode" (Chromium 155) or "cloakbrowser". Omitted means Chromium 155 where this computer can run it. */
   chromiumRuntime?: string;
+  /** Opt-in local device rotation on each fresh launch. */
+  randomizeFingerprintOnLaunch?: boolean;
   name?: string;
   group?: string;
   /** Account platform: "x.com", "telegram.org", or "" (none). */
@@ -80,10 +82,15 @@ export function hostScreenFloor(
  * A random realistic resolution not smaller than `floor`, or `floor` itself when none is.
  * On a smaller screen a maximized window would have to shrink to fit it.
  */
-export function defaultScreen(floor: { width: number; height: number } | null, random = Math.random): { width: number; height: number } {
+export function defaultScreen(
+  floor: { width: number; height: number } | null, random = Math.random,
+  previous?: { width: number; height: number },
+): { width: number; height: number } {
   const fits = SCREENS.filter(([width, height]) => !floor || (width >= floor.width && height >= floor.height));
   if (!fits.length) return floor!;
-  const [width, height] = fits[Math.floor(random() * fits.length)]!;
+  const alternatives = fits.filter(([width, height]) => width !== previous?.width || height !== previous?.height);
+  const choices = alternatives.length ? alternatives : fits;
+  const [width, height] = choices[Math.floor(random() * choices.length)]!;
   return { width, height };
 }
 
@@ -105,6 +112,9 @@ export function generateId(exists: (id: string) => boolean): string {
 }
 
 export function buildNewProfile(input: NewProfileInput, exists: (id: string) => boolean): Profile {
+  if (input.randomizeFingerprintOnLaunch !== undefined && typeof input.randomizeFingerprintOnLaunch !== "boolean") {
+    throw new Error("randomizeFingerprintOnLaunch must be boolean");
+  }
   const id = generateId(exists);
 
   const proxy: ProxySpec | null = normalizeProxySpec(input.proxy);
@@ -155,6 +165,7 @@ export function buildNewProfile(input: NewProfileInput, exists: (id: string) => 
     screenWidth: typeof firefoxScreenWidth === "number" ? firefoxScreenWidth : selected.width,
     screenHeight: typeof firefoxScreenHeight === "number" ? firefoxScreenHeight : selected.height,
     fingerprintSeed: deterministicSeed(id),
+    ...(input.randomizeFingerprintOnLaunch !== undefined ? { randomizeFingerprintOnLaunch: input.randomizeFingerprintOnLaunch } : {}),
     cookies: [],
     seeded: false,
   });

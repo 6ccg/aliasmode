@@ -6,6 +6,7 @@ mod shutdown;
 mod sidecar;
 mod update_attempt;
 mod update_download;
+mod url_router;
 
 use credentials::{credential_delete, credential_get, credential_set, CredentialOrigin};
 use rand::random;
@@ -478,8 +479,15 @@ pub fn run() {
     let import_request = parse_cloakpit_import_args(std::env::args_os().skip(1));
     let app = tauri::Builder::default()
         .manage(RevealRequested::default())
+        .manage(url_router::UrlInbox::default())
         .manage(releases::UpdateCoordinator::default())
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            url_router::receive(
+                app,
+                argv.iter()
+                    .filter(|value| value.starts_with("http://") || value.starts_with("https://"))
+                    .cloned(),
+            );
             if background_requested(argv) {
                 return;
             }
@@ -496,6 +504,13 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
+            url_router::pending_browser_urls,
+            url_router::dismiss_browser_url,
+            url_router::installed_browsers,
+            url_router::validate_browser_application,
+            url_router::open_browser_url,
+            url_router::default_browser_status,
+            url_router::request_default_browser,
             credential_get,
             credential_set,
             credential_delete,
@@ -650,7 +665,8 @@ pub fn run() {
                     .permission("allow-credential-bridge")
                     .permission("allow-runtime-ready")
                     .permission("allow-script-capability")
-                    .permission("allow-update-bridge"),
+                    .permission("allow-update-bridge")
+                    .permission("allow-url-router"),
             ) {
                 return Err(error.into());
             }
@@ -754,6 +770,10 @@ pub fn run() {
     let requested_exit_code = Arc::new(AtomicI32::new(0));
     let exit_code = Arc::clone(&requested_exit_code);
     app.run_return(move |app, event| match event {
+        #[cfg(target_os = "macos")]
+        tauri::RunEvent::Opened { urls } => {
+            url_router::receive(app, urls.into_iter().map(|url| url.to_string()))
+        }
         tauri::RunEvent::ExitRequested {
             code: Some(code), ..
         } => exit_code.store(code, Ordering::Release),

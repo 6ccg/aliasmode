@@ -5,7 +5,7 @@
  * dir and remote-debugging port — the same one-process-per-profile model
  * AdsPower uses, which keeps automation debug-port-based teardown working.
  *
- * Launch is read-only with respect to identity: proxy, fingerprint seed, UA,
+ * By default launch is read-only with respect to identity: proxy, fingerprint seed, UA,
  * and screen come straight from the store. Imported cookies fill gaps in the
  * persistent browser state without replacing cookies changed by the browser.
  */
@@ -48,6 +48,7 @@ import { startProxyRelay, type ProxyRelay } from "./proxy-relay.ts";
 import type { SearchProviderBootstrapOptions, SearchProviderSetupResult } from "./search-provider.ts";
 import { assertSafeProfileId } from "./profile-id.ts";
 import { dpapiKeysReadable, localStateDpapiKey } from "./dpapi.ts";
+import { randomizedLaunchProfile } from "./random-fingerprint.ts";
 import { captureFingerprint, recordCapture } from "./fingerprint-capture.ts";
 import type { FingerprintSample } from "./diagnose.ts";
 import { claimedScreenArea, watchWindowFit } from "./window-fit.ts";
@@ -2093,6 +2094,15 @@ export class Launcher {
       profile = this.store.getProfile(profileId)!;
       profileSnapshot = JSON.stringify(profile);
       this.log(`profile ${profileId} timezone set to ${exit.timezone} from its proxy exit`);
+    }
+    // Only the fresh-launch path rotates. A healthy running browser returned above,
+    // and concurrent starts coalesce in start(). Persist before either engine reads
+    // its config so ownership snapshots and survivor reattachment use the same identity.
+    if (profile.randomizeFingerprintOnLaunch) {
+      const current = this.requireUnchangedProfile(profileId, profileSnapshot, "fingerprint rotation");
+      this.store.upsertProfile(randomizedLaunchProfile(current), { replaceDeviceIdentity: true });
+      profile = this.store.getProfile(profileId)!;
+      profileSnapshot = JSON.stringify(profile);
     }
     if (profile.engine === "firefox") {
       return this.startFreshFirefox(profile, startupUrls, opts, pendingSession, exit);

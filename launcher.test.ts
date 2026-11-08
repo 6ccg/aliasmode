@@ -6056,3 +6056,42 @@ test("Chromium 155 beta is refused on unsupported hosts before any download", as
   expect(downloads).toBe(0);
   store.close();
 });
+
+test("opt-in fingerprint rotates on fresh launches but not concurrent starts or reattachment", async () => {
+  const store = seeded();
+  makeDirect(store);
+  const id = "k1d0cd11";
+  const original = store.getProfile(id)!;
+  store.upsertProfile({ ...original, randomizeFingerprintOnLaunch: true });
+  const args: string[][] = [];
+  const f = fleet();
+  const launcher = newLauncher(store, f, args);
+  try {
+    await Promise.all([launcher.start(id), launcher.start(id)]);
+    const first = store.getProfile(id)!;
+    expect(first.fingerprintSeed).not.toBe(original.fingerprintSeed);
+    expect(args).toHaveLength(1);
+    expect(args[0]).toContain(`--fingerprint=${first.fingerprintSeed}`);
+    const dataDir = launcher.userDataDir(id);
+    writeFileSync(join(dataDir, "keep-session.txt"), "persistent browser session");
+    await launcher.start(id);
+    expect(store.getProfile(id)!.fingerprintSeed).toBe(first.fingerprintSeed);
+    expect(args).toHaveLength(1);
+    await launcher.stop(id);
+    await launcher.start(id);
+    const second = store.getProfile(id)!;
+    expect(second.fingerprintSeed).not.toBe(first.fingerprintSeed);
+    expect(args).toHaveLength(2);
+    expect(args[1]).toContain(`--fingerprint=${second.fingerprintSeed}`);
+    expect(readFileSync(join(dataDir, "keep-session.txt"), "utf8")).toBe("persistent browser session");
+    expect(second.cookies).toEqual(original.cookies);
+    expect(second.ua).toBe(original.ua);
+    expect(args[1]).toContain(`--fingerprint-screen-width=${second.screenWidth}`);
+    expect(args[1]).toContain(`--fingerprint-screen-height=${second.screenHeight}`);
+    expect(second.hardware).toBeDefined();
+  } finally {
+    await launcher.stop(id);
+    store.close();
+    rmSync(testDataRoot(store), { recursive: true, force: true });
+  }
+});

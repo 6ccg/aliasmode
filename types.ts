@@ -60,9 +60,9 @@ export interface ProxySpec {
 /**
  * A fully-resolved profile. Every field that affects the browser identity
  * (proxy, fingerprintSeed, ua, screen) is fixed once at import time and read
- * verbatim on every launch. The launcher must never recompute or rotate any
- * of these — that mirrors the AdsPower launch invariant: launch uses stored
- * state, it does not mutate it.
+ * verbatim by default. Opt-in randomizeFingerprintOnLaunch rotates supported
+ * device configuration before a fresh launch; OS, network choices
+ * and persistent browser data remain unchanged.
  */
 /**
  * Hardware a profile reports on every computer. A CloakBrowser profile gets it at creation;
@@ -145,8 +145,10 @@ export interface Profile {
   locale?: string;
   screenWidth: number;
   screenHeight: number;
-  /** Deterministic per-profile CloakBrowser fingerprint seed. */
+  /** Stored engine fingerprint seed; stable unless edited or per-launch rotation is enabled. */
   fingerprintSeed: number;
+  /** Opt-in: regenerate supported device fields before each fresh launch, replacing manual device overrides. */
+  randomizeFingerprintOnLaunch?: boolean;
   /**
    * Explicit desktop platform for --fingerprint-platform. Optional so existing
    * Profile literals stay valid; when absent the launcher falls back to

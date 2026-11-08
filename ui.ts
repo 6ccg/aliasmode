@@ -500,6 +500,7 @@ function profileEditView(p: Profile) {
     locale: p.locale ?? "",
     cores: p.hardware ? String(p.hardware.cores) : "",
     fingerprintSeed: String(p.fingerprintSeed),
+    randomizeFingerprintOnLaunch: p.randomizeFingerprintOnLaunch === true,
     cookieCount: p.cookies.length, seeded: p.seeded,
     mobilePersona: !!conversion,
     ...(conversion ? {
@@ -558,6 +559,10 @@ function applyEdits(p: Profile, set: Record<string, unknown>): boolean {
     syncFirefoxTimezone(p);
   }
   if ("fingerprintSeed" in set) p.fingerprintSeed = parseStrictSeed(set.fingerprintSeed);
+  if ("randomizeFingerprintOnLaunch" in set) {
+    if (typeof set.randomizeFingerprintOnLaunch !== "boolean") throw new Error("randomizeFingerprintOnLaunch must be boolean");
+    p.randomizeFingerprintOnLaunch = set.randomizeFingerprintOnLaunch;
+  }
   if ("cores" in set) {
     const hardware = editedProfileHardware(p, parseStrictCores(set.cores));
     if (hardware) p.hardware = hardware;
@@ -2238,6 +2243,30 @@ export async function handleUiRequest(
       return Response.json({ ok: true, removed: pending.length });
     }
     return noStoreJson({ ok: true, cookies: pending.map(({ domain, name }) => ({ domain, name })) });
+  }
+
+  // Explicitly selected system links open in a new tab, without changing startup URLs.
+  const openUrlRoute = pathname.match(/^\/ui\/api\/profiles\/([^/]+)\/open-url$/);
+  if (openUrlRoute && req.method === "POST") {
+    const rejected = rejectUntrustedJsonMutation(req);
+    if (rejected) return rejected;
+    if (options.cloudBrowser || remote) return Response.json({ ok: false, error: "URL routing is local-only" }, { status: 400 });
+    let id: string;
+    try { id = decodeURIComponent(openUrlRoute[1]!); } catch { return Response.json({ ok: false, error: PROFILE_ID_ERROR }, { status: 400 }); }
+    if (!isSafeProfileId(id)) return Response.json({ ok: false, error: PROFILE_ID_ERROR }, { status: 400 });
+    const body = await req.json().catch(() => null);
+    let target: URL;
+    try {
+      if (typeof body?.url !== "string" || body.url.length > 16384) throw new Error();
+      target = new URL(body.url);
+      if (!["http:", "https:"].includes(target.protocol) || !target.hostname || target.username || target.password) throw new Error();
+    } catch { return Response.json({ ok: false, error: "Only HTTP and HTTPS links without embedded credentials are supported" }, { status: 400 }); }
+    if (!store.getProfile(id)) return Response.json({ ok: false, error: "no such profile" }, { status: 404 });
+    if (!await launcher.certifiedActive(id).catch(() => false)) return Response.json({ ok: false, error: "profile browser is not open" }, { status: 409 });
+    const launch = store.getLaunch(id);
+    if (!launch?.ws) return Response.json({ ok: false, error: "profile browser is not open" }, { status: 409 });
+    try { await launcher.navigate(launch.ws, [target.href], false); return Response.json({ ok: true }); }
+    catch { return Response.json({ ok: false, error: "Browser navigation failed; the link remains queued" }, { status: 500 }); }
   }
 
   // Open the AliasMode fingerprint test in a new tab of a running profile. Only these pages can be opened.

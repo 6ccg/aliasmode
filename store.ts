@@ -76,6 +76,11 @@ export class ProfileStore {
     } catch {
       /* column already exists */
     }
+    try {
+      this.db.exec(`ALTER TABLE profiles ADD COLUMN randomize_fingerprint_on_launch INTEGER NOT NULL DEFAULT 0`);
+    } catch {
+      /* column already exists */
+    }
     // Cookies added while the profile was closed. The next launch sets them, then clears them.
     try {
       this.db.exec(`ALTER TABLE profiles ADD COLUMN pending_cookies_json TEXT NOT NULL DEFAULT '[]'`);
@@ -316,8 +321,10 @@ export class ProfileStore {
     };
   }
 
-  /** Insert or replace a profile's identity. Preserves the existing seeded flag. */
-  upsertProfile(p: Profile): void {
+  /** Insert or replace identity. Normal edits preserve omitted hardware/captures.
+   * Fresh-launch device regeneration explicitly replaces them in this same atomic write.
+   * Always preserves the existing seeded flag. */
+  upsertProfile(p: Profile, options: { replaceDeviceIdentity?: boolean } = {}): void {
     // Defense in depth for direct hub/API/remote callers that bypass the import
     // parser. Invalid full-profile JSON must never reach persistent identity.
     assertValidProfile(p);
@@ -330,7 +337,7 @@ export class ProfileStore {
     if (!p.chromiumRuntime && storedRuntime) p = { ...p, chromiumRuntime: storedRuntime };
     // An edit or re-import that omits stored hardware keeps it. setHardware clears it.
     const storedHardware = existing?.hardware_json || "";
-    if (!p.hardware && storedHardware) p = { ...p, hardware: JSON.parse(storedHardware) };
+    if (!options.replaceDeviceIdentity && !p.hardware && storedHardware) p = { ...p, hardware: JSON.parse(storedHardware) };
     if (!this.getLaunch(p.id)) p = completeProfileFingerprint(p);
     const browser = normalizeProfileEngine(p.engine, p.firefox);
     if (p.proxy && p.proxyError) throw new Error("profile cannot contain both a valid proxy and a proxy quarantine error");
@@ -351,12 +358,12 @@ export class ProfileStore {
       .query(
         `INSERT INTO profiles
            (id, engine, chromium_runtime, hardware_json, firefox_config_json, acc_id, name, "group", platform, username, password, email, email_password, twofa, proxy_json, proxy_error, extensions_json, tags_json, custom_no, ua, timezone, timezone_manual, locale,
-            screen_width, screen_height, fingerprint_seed, platform_os, fp_observed_json, fp_expected_json, fp_verdict_json, cookies_json, seeded, created_at)
+            screen_width, screen_height, fingerprint_seed, randomize_fingerprint_on_launch, platform_os, fp_observed_json, fp_expected_json, fp_verdict_json, cookies_json, seeded, created_at)
          -- fp_verdict_json is literal '': a verdict is a COMPUTED fact, written
          -- only by saveObservedFingerprint from a real measurement. If a caller
          -- could supply one, an import could hand itself a "verified" badge and
          -- the badge would mean nothing.
-         VALUES ($id,$engine,$chromiumRuntime,$hardware,$firefox,$acc,$name,$group,$platform,$user,$pass,$email,$emailPass,$twofa,$proxy,$proxyError,$ext,$tags,$customNo,$ua,$tz,$tzManual,$locale,$w,$h,$seed,$platformOs,$fpObserved,$fpExpected,'',$cookies,$seeded,$created)
+         VALUES ($id,$engine,$chromiumRuntime,$hardware,$firefox,$acc,$name,$group,$platform,$user,$pass,$email,$emailPass,$twofa,$proxy,$proxyError,$ext,$tags,$customNo,$ua,$tz,$tzManual,$locale,$w,$h,$seed,$randomizeFingerprint,$platformOs,$fpObserved,$fpExpected,'',$cookies,$seeded,$created)
          ON CONFLICT(id) DO UPDATE SET
            engine=$engine, firefox_config_json=$firefox, hardware_json=$hardware, timezone_manual=$tzManual,
            acc_id=$acc, name=$name, "group"=$group, platform=$platform, username=$user, password=$pass,
@@ -383,23 +390,25 @@ export class ProfileStore {
              ELSE ''
            END,
            screen_width=$w, screen_height=$h, locale=$locale,
-           fingerprint_seed=$seed, platform_os=$platformOs,
+           fingerprint_seed=$seed, randomize_fingerprint_on_launch=$randomizeFingerprint, platform_os=$platformOs,
            -- An ordinary profile edit carries no capture. Preserving the stored
            -- one keeps a rename from erasing a measurement that is still true.
-           fp_observed_json = CASE WHEN $fpObserved <> '' THEN $fpObserved ELSE fp_observed_json END,
-           fp_expected_json = CASE WHEN $fpExpected <> '' THEN $fpExpected ELSE fp_expected_json END,
+           fp_observed_json = CASE WHEN $replaceDeviceIdentity THEN '' WHEN $fpObserved <> '' THEN $fpObserved ELSE fp_observed_json END,
+           fp_expected_json = CASE WHEN $replaceDeviceIdentity THEN '' WHEN $fpExpected <> '' THEN $fpExpected ELSE fp_expected_json END,
            -- A CHANGED expectation invalidates the verdict: one computed
            -- against the previous expectation must never be read as if it
            -- applied to this one. An unrelated edit (a rename, a group move)
            -- re-sends the same expectation and keeps its verdict. As everywhere
            -- in this clause, the bare column is the OLD row value.
            fp_verdict_json  = CASE
+             WHEN $replaceDeviceIdentity THEN ''
              WHEN $fpExpected <> '' AND $fpExpected IS NOT fp_expected_json THEN ''
              ELSE fp_verdict_json
            END,
            cookies_json=$cookies`,
       )
       .run({
+        $replaceDeviceIdentity: options.replaceDeviceIdentity ? 1 : 0,
         $id: p.id,
         $engine: browser.engine,
         $chromiumRuntime: chromiumRuntime ?? "",
@@ -426,6 +435,7 @@ export class ProfileStore {
         $w: p.screenWidth,
         $h: p.screenHeight,
         $seed: p.fingerprintSeed,
+        $randomizeFingerprint: p.randomizeFingerprintOnLaunch ? 1 : 0,
         $platformOs: p.platformOs ?? "",
         $fpObserved: p.fpObserved ? JSON.stringify(p.fpObserved) : "",
         $fpExpected: p.fpExpected ? JSON.stringify(p.fpExpected) : "",
@@ -1121,6 +1131,7 @@ function rowToProfile(row: any): Profile {
     screenWidth: row.screen_width ?? 1920,
     screenHeight: row.screen_height ?? 1080,
     fingerprintSeed: row.fingerprint_seed,
+    ...(row.randomize_fingerprint_on_launch ? { randomizeFingerprintOnLaunch: true } : {}),
     platformOs: row.platform_os ?? "",
     ...optionalJson<ObservedFingerprint>("fpObserved", row.fp_observed_json),
     ...optionalJson<ObservedFingerprint>("fpExpected", row.fp_expected_json),

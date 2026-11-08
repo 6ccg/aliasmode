@@ -2958,9 +2958,10 @@ test("Services API serves the list and remembers when the user hides the page", 
   const appConfig = new AppConfigStore(join(root, "config.json"));
   appConfig.setMode("local");
   resetServicesCache();
-  const servicesFetch = (async () => Response.json({ services: [
+  let serviceRequests = 0;
+  const servicesFetch = (async () => { serviceRequests++; return Response.json({ services: [
     { slug: "smspool", name: "SMSPool", category: "sms", description: "Numbers.", badge: "sponsored" },
-  ] })) as unknown as typeof fetch;
+  ] }); }) as unknown as typeof fetch;
   const call = (request: Request) => handleUiRequest(request, {} as any, s, null, { appConfig, servicesFetch });
 
   const listed = await call(new Request("http://x/ui/api/services"));
@@ -2969,6 +2970,7 @@ test("Services API serves the list and remembers when the user hides the page", 
     source: "live",
     services: [{ slug: "smspool", name: "SMSPool", category: "sms", description: "Numbers.", badge: "sponsored" }],
   });
+  expect(serviceRequests).toBe(1);
   resetServicesCache();
 
   const hide = (body: unknown, headers: Record<string, string> = { "content-type": "application/json" }) => call(
@@ -5155,4 +5157,41 @@ test("fingerprint check route opens only the AliasMode test page in a running pr
   expect(closed!.status).toBe(409);
   expect(opened).toHaveLength(2);
   s.close();
+});
+
+test("local profile editor saves and validates per-launch fingerprint rotation", async () => {
+  const s = store();
+  const update = (value: unknown) => handleUiRequest(
+    new Request("http://x/ui/api/profiles/k1d0cd11/update", { method: "POST", body: JSON.stringify({ set: { randomizeFingerprintOnLaunch: value } }) }),
+    {} as any, s,
+  );
+  try {
+    expect((await update(true))!.status).toBe(200);
+    expect(s.getProfile("k1d0cd11")!.randomizeFingerprintOnLaunch).toBe(true);
+    expect((await update("false"))!.status).toBe(500);
+    expect(s.getProfile("k1d0cd11")!.randomizeFingerprintOnLaunch).toBe(true);
+    expect((await update(false))!.status).toBe(200);
+    expect(s.getProfile("k1d0cd11")!.randomizeFingerprintOnLaunch ?? false).toBe(false);
+  } finally { s.close(); }
+});
+
+test("create profile persists rotation immediately, including false, and rejects invalid values", async () => {
+  const store = new ProfileStore(":memory:");
+  try {
+    for (const engine of ["chromium", "firefox"]) {
+      for (const enabled of [true, false]) {
+        const response = await handleUiRequest(new Request("http://x/ui/api/profiles", {
+          method: "POST", body: JSON.stringify({ engine, randomizeFingerprintOnLaunch: enabled }),
+        }), {} as any, store);
+        expect(response!.status).toBe(200);
+        const result = await response!.json();
+        expect(store.getProfile(result.id)?.randomizeFingerprintOnLaunch === true).toBe(enabled);
+      }
+    }
+    const response = await handleUiRequest(new Request("http://x/ui/api/profiles", {
+      method: "POST", body: JSON.stringify({ randomizeFingerprintOnLaunch: "true" }),
+    }), {} as any, store);
+    expect(response!.status).toBe(400);
+    expect((await response!.json()).error).toContain("must be boolean");
+  } finally { store.close(); }
 });

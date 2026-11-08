@@ -750,6 +750,7 @@ export async function checkProxy(proxy: ProxyCheckInput): Promise<ProxyCheckResu
 }
 
 export interface NewProfileInput {
+  randomizeFingerprintOnLaunch?: boolean;
   name?: string;
   /** Browser family selected for a new Local profile. */
   engine?: "chromium" | "firefox";
@@ -823,6 +824,7 @@ export interface EditProfile {
   /** Processor count the profile reports, or "" when the engine chooses. */
   cores?: string;
   fingerprintSeed?: string;
+  randomizeFingerprintOnLaunch?: boolean;
 
   cookieCount: number;
   seeded: boolean;

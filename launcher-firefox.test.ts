@@ -877,3 +877,25 @@ test("the first background fetch removes font packs that are no longer pinned", 
   f.launcher.prefetchFirefoxFontPacks([]);
   expect(existsSync(join(packs, "macos-0000000000000000"))).toBe(false);
 });
+
+test("Firefox opt-in rotates actual runtime seeds only for a fresh browser", async () => {
+  const f = fixture("darwin", "arm64");
+  f.store.upsertProfile({ ...f.profile, randomizeFingerprintOnLaunch: true, hardware: { cores: 255 }, fpExpected: { canvas: "old" } });
+  await f.launcher.start(f.profile.id);
+  const first = f.config() as Record<string, unknown>;
+  const seed = f.store.getProfile(f.profile.id)!.fingerprintSeed;
+  expect(seed).not.toBe(f.profile.fingerprintSeed);
+  expect(f.store.getProfile(f.profile.id)!.hardware).toBeUndefined();
+  expect(f.store.getProfile(f.profile.id)!.fpExpected).toBeUndefined();
+  expect(first["navigator.hardwareConcurrency"]).not.toBe(255);
+  await f.launcher.start(f.profile.id);
+  expect(f.launches()).toBe(1);
+  expect(f.store.getProfile(f.profile.id)!.fingerprintSeed).toBe(seed);
+  await f.launcher.stop(f.profile.id);
+  await f.launcher.start(f.profile.id);
+  const second = f.config() as Record<string, unknown>;
+  expect(f.launches()).toBe(2);
+  expect(second["aliasmode:canvasSeed"]).not.toBe(first["aliasmode:canvasSeed"]);
+  expect(second["aliasmode:textSeed"]).not.toBe(first["aliasmode:textSeed"]);
+  await f.launcher.stop(f.profile.id);
+});
