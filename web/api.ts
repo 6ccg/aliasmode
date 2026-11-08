@@ -30,6 +30,10 @@ export interface UiProfile {
   engine: "chromium" | "firefox";
   /** "aliasmode" is the opt-in Chromium 155 beta; absent is CloakBrowser. */
   chromiumRuntime?: "aliasmode";
+  /** Effective configured desktop OS; omitted when not known. Seed rotation does not change it. */
+  fingerprintOs?: "windows" | "macos" | "linux";
+  /** Recently observed proxy country, never inferred from timezone or locale. */
+  proxyCountryCode?: string;
   group: string;
   /** Canonical account platform domain, or "" (none). */
   platform: string;

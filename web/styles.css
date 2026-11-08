@@ -1740,3 +1740,61 @@ td.col-tags .chip + .chip { margin-left: 4px; }
 .script-profile.running { color: var(--accent-ink); }.script-profile.failed { color: var(--danger-ink); }.script-profile.succeeded { color: var(--success-ink); }
 .script-profile small { grid-column: 1 / -1; color: var(--danger-ink); }.script-profile small.warning { color: var(--warn-ink); }
 @media (max-width: 700px) { .scripts-layout { grid-template-columns: 1fr; }.scripts-head, .scripts-library-search { align-items: flex-start; flex-direction: column; }.scripts-library-search { align-items: stretch; } }
+
+/* URL routing is a transient compact surface, not a dashboard-sized modal. */
+body.browser-chooser-active { min-width: 0; overflow: hidden; }
+body.browser-chooser-active #root { visibility: hidden; }
+.browser-chooser-backdrop { visibility: visible; position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; background: var(--bg, #f7f7f9); padding: 12px; }
+.browser-chooser { width: min(456px, 100%); max-height: 100%; display: flex; flex-direction: column; color: var(--ink, #23252c); background: var(--surface, #fff); border: 1px solid var(--line, #e6e7eb); border-radius: 18px; overflow: hidden; box-shadow: 0 8px 28px #15203b0c; outline: none; }
+.browser-chooser-header { display: flex; align-items: center; justify-content: space-between; padding: 20px 20px 14px; gap: 12px; }
+.browser-chooser-brand { font-size: 9px; font-weight: 700; letter-spacing: 1.7px; color: var(--muted, #797d89); }
+.browser-chooser h2 { font-size: 20px; line-height: 1.3; font-weight: 650; margin: 5px 0 0; }
+.browser-chooser-close { flex: none; width: 30px; height: 30px; border: 0; border-radius: 50%; background: var(--bg, #f3f4f7); color: inherit; font-size: 22px; cursor: pointer; }
+.browser-chooser-link { margin: 0 20px; padding: 10px 12px; border-radius: 10px; background: var(--bg, #f5f6f8); font-size: 12px; min-width: 0; }
+.browser-chooser-summary { display: flex; gap: 8px; align-items: center; cursor: pointer; list-style: none; }
+.browser-chooser-summary::-webkit-details-marker { display: none; }
+.browser-chooser-summary > span:nth-child(2) { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1; }
+.browser-chooser-detail { font-size: 10px; color: var(--muted, #777b88); flex: none; }
+.browser-chooser-link p { overflow-wrap: anywhere; max-height: 90px; overflow: auto; margin: 8px 0 0; user-select: text; }
+.browser-chooser-content { padding: 0 20px 16px; overflow: auto; min-height: 0; overscroll-behavior: contain; }
+.browser-chooser h3 { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600; color: var(--muted, #737987); margin: 18px 0 9px; }
+.browser-chooser h3 span { font-size: 10px; font-weight: 400; }
+.browser-chooser-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.browser-choice { width: 100%; min-width: 0; min-height: 48px; display: flex; align-items: center; text-align: left; gap: 8px; padding: 6px 10px; border: 1px solid var(--line, #e5e7ed); border-radius: 10px; background: var(--surface, #fff); color: inherit; font: inherit; font-size: 12px; cursor: pointer; transition: background .12s, border-color .12s; }
+.browser-choice > span:nth-child(2) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.browser-choice:hover:not(:disabled) { background: var(--bg, #f5f7fc); border-color: #9baef1; }
+.browser-chooser :focus-visible { outline: 2px solid #5778e8; outline-offset: 2px; }
+.browser-choice-icon { display: grid; place-items: center; flex: none; width: 32px; height: 32px; border-radius: 8px; background: #6379ce12; color: #697fc0; font-size: 13px; font-weight: 650; }
+.browser-choice-arrow { flex: none; font-size: 12px; color: var(--muted, #a0a5af); }
+.browser-chooser-profiles { display: grid; gap: 6px; }
+.profile-choice { min-height: 42px; padding: 5px 10px; }
+.browser-chooser-search { width: 100%; margin-bottom: 8px; padding: 9px 10px; font-size: 12px; border: 1px solid var(--line, #e5e7ed); border-radius: 8px; background: var(--surface, #fff); color: inherit; }
+.browser-chooser-note { font-size: 11px; line-height: 1.5; color: var(--muted, #797d89); margin: 8px 0 0; }
+.browser-chooser-error { font-size: 12px; line-height: 1.4; color: #b93d42; margin: 0; padding: 10px 20px; max-height: 80px; overflow: auto; overflow-wrap: anywhere; }
+.browser-chooser-footer { flex: none; border-top: 1px solid var(--line, #e8e9ed); display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 20px; font-size: 10px; color: var(--muted, #797d89); }
+.browser-chooser-footer button { border: 0; background: transparent; padding: 3px 0; color: inherit; font-size: 11px; cursor: pointer; }
+.browser-chooser-footer kbd { margin-left: 5px; font: inherit; opacity: .6; }
+.browser-chooser button:disabled { opacity: .5; cursor: default; }
+.browser-order-row > span { min-width: 0; overflow-wrap: anywhere; }
+.browser-order-actions { display: flex; gap: 4px; flex: none; }
+@media (max-width: 360px) { .browser-chooser-grid { grid-template-columns: 1fr; } }
+
+.browser-choice-icon img { width: 32px; height: 32px; object-fit: contain; }
+.browser-chooser-detail { border: 0; background: transparent; color: var(--muted); padding: 4px; border-radius: 5px; cursor: pointer; font-size: 13px; letter-spacing: 1px; }
+.browser-chooser-detail:hover { background: var(--surface-active); }
+.browser-chooser-header > div { flex: 1; text-align: center; }
+.browser-chooser-brand { letter-spacing: .2px; font-size: 12px; }
+.browser-chooser h2 { margin-top: 8px; font-size: 22px; }
+.browser-chooser { background: linear-gradient(145deg, var(--surface), var(--surface-sunken)); }
+.browser-chooser-header { position: relative; }
+.browser-chooser-close { position: absolute; left: 16px; top: 16px; }
+.browser-chooser-backdrop { background: var(--surface-sunken); }
+
+.profile-routing-info { display: inline-flex; align-items: center; gap: 4px; flex: none; min-width: 0; }
+.profile-routing-chip { padding: 3px 5px; border-radius: 5px; background: var(--surface-sunken); color: var(--muted); font-size: 9px; line-height: 1.2; white-space: nowrap; }
+.profile-routing-flag { font-size: 15px; line-height: 1; }
+.profile-choice { gap: 6px; }
+@media (max-width: 380px) {
+  .profile-choice { flex-wrap: wrap; }
+  .profile-routing-info { margin-left: 38px; }
+}

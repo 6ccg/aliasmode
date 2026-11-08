@@ -38,7 +38,7 @@ import { handleTrashRequest } from "./trash.ts";
 import { importInbox, importBuffers, prepareImportBuffers, ProfileImportError, type ImportOverrides } from "./inbox.ts";
 import { hostChromiumRuntime, supportsChromium155Host } from "./aliasmode-chromium.ts";
 import { buildNewProfile, defaultProfileEngine, type NewProfileInput } from "./create.ts";
-import { firefoxGraphicsRenderer } from "./firefox-config.ts";
+import { firefoxPersonaOs, firefoxGraphicsRenderer } from "./firefox-config.ts";
 import { attachTimezones, lookupExitLocation, type FetchLike } from "./geoip.ts";
 import { localeForCountry, localeForTimezone, normalizeProfileLocale } from "./profile-locale.ts";
 import { parseUpdateFile, rowsToUpdates, serializeCsv, serializeAdsTxt, serializeXlsxRows, parseStrictProxy, parseStrictResolution, parseStrictPlatformOs, parseStrictTimezone, parseStrictCustomNo, parseStrictCores, parseStrictSeed, decodeText, parseCookieText, cookiesForEngine } from "./parse.ts";
@@ -55,8 +55,10 @@ import {
 import { decodePortableProfile } from "./portable-profile.ts";
 import { isSafeProfileId, PROFILE_ID_ERROR } from "./profile-id.ts";
 import { normalizeProxySpec, proxyHostPort, proxyLegacyString, type ProxyInput } from "./proxy.ts";
-import { convertMobilePersonaToDesktop, editedProfileHardware, isMobileUserAgent } from "./fingerprint.ts";
+import { convertMobilePersonaToDesktop, editedProfileHardware, isMobileUserAgent, platformFromUA } from "./fingerprint.ts";
 import { setFirefoxScreen, syncFirefoxTimezone } from "./firefox-config.ts";
+import { createHash } from "node:crypto";
+import { normalizeCountryCode } from "./web/profile-routing-info.ts";
 import { join, resolve, dirname } from "node:path";
 import { readdirSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { validAgentAuthorization } from "./agent-control.ts";
@@ -80,6 +82,10 @@ export interface UiProfile {
   engine: "chromium" | "firefox";
   /** Present only for the opt-in Chromium 155 beta. */
   chromiumRuntime?: ChromiumRuntime;
+  /** Effective configured desktop OS; omitted when not known. Seed rotation does not change it. */
+  fingerprintOs?: "windows" | "macos" | "linux";
+  /** Recently observed proxy country, never inferred from timezone or locale. */
+  proxyCountryCode?: string;
   group: string;
   /** Account platform: "x.com", "telegram.org", or "" (none). */
   platform: string;
@@ -141,6 +147,57 @@ function openResponse(
   });
 }
 
+// This is observed metadata only: opening the chooser never starts a network check.
+// Scope it to this store and exact proxy credentials (hashed, never returned), with
+// bounded memory and a short lifetime because an exit location can change.
+const knownProxyCountries = new WeakMap<ProfileStore, Map<string, { code: string; expiresAt: number }>>();
+const PROXY_COUNTRY_TTL_MS = 15 * 60 * 1000;
+const PROXY_COUNTRY_LIMIT = 256;
+
+function proxyCountryKey(proxy: ProxySpec): string | undefined {
+  try {
+    const p = normalizeProxySpec(proxy);
+    if (!p) return undefined;
+    return createHash("sha256").update(JSON.stringify([p.type, p.host, p.port, p.user, p.pass])).digest("hex");
+  } catch {
+    // Optional metadata must never make a malformed legacy profile unloadable.
+    return undefined;
+  }
+}
+
+function rememberProxyCountry(store: ProfileStore, proxy: ProxySpec, result?: ProxyCheckResult): void {
+  const countries = knownProxyCountries.get(store) ?? new Map();
+  const key = proxyCountryKey(proxy);
+  if (!key) return;
+  countries.delete(key);
+  const code = normalizeCountryCode(result?.country);
+  if (result?.status === "working" && result.successes > 0 && !result.rotating && code) {
+    countries.set(key, { code, expiresAt: Date.now() + PROXY_COUNTRY_TTL_MS });
+  }
+  while (countries.size > PROXY_COUNTRY_LIMIT) countries.delete(countries.keys().next().value!);
+  knownProxyCountries.set(store, countries);
+}
+
+function knownProxyCountry(store: ProfileStore, proxy: ProxySpec | null): string | undefined {
+  if (!proxy) return undefined;
+  const countries = knownProxyCountries.get(store);
+  if (!countries) return undefined;
+  const key = proxyCountryKey(proxy);
+  if (!key) return;
+  const known = countries.get(key);
+  if (known && known.expiresAt > Date.now()) return known.code;
+  countries.delete(key);
+  return undefined;
+}
+
+function configuredFingerprintOs(profile: Profile): UiProfile["fingerprintOs"] {
+  // Firefox also stores its identity in config; use the runtime's own resolver.
+  const os = profileEngine(profile) === "firefox"
+    ? firefoxPersonaOs(profile)
+    : profile.platformOs || platformFromUA(profile.ua);
+  return os === "windows" || os === "macos" || os === "linux" ? os : undefined;
+}
+
 /**
  * Map the store into redacted UiProfiles joined with running state. Status comes
  * from the launches table, which is authoritative for every browser THIS manager
@@ -152,10 +209,14 @@ export function listUiProfiles(store: ProfileStore): UiProfile[] {
   const pendingCookies = store.pendingCookieCounts();
   return store.listProfiles().map((p) => {
     const l = launches.get(p.id);
+    const fingerprintOs = configuredFingerprintOs(p);
+    const proxyCountryCode = knownProxyCountry(store, p.proxy);
     return {
       id: p.id,
       name: p.name,
       engine: profileEngine(p),
+      ...(fingerprintOs ? { fingerprintOs } : {}),
+      ...(proxyCountryCode ? { proxyCountryCode } : {}),
       ...(p.chromiumRuntime ? { chromiumRuntime: p.chromiumRuntime } : {}),
       group: p.group,
       platform: p.platform ?? "",
@@ -843,8 +904,10 @@ export async function handleUiRequest(
     }
     try {
       const result = await (options.proxyCheck ?? runProxyCheck)(proxy);
+      rememberProxyCountry(store, proxy, result);
       return noStoreJson({ ok: true, ...proxyCheckView(result) });
     } catch {
+      rememberProxyCountry(store, proxy);
       return noStoreJson({ ok: false, error: "Proxy check failed" }, 500);
     }
   }

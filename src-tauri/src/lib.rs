@@ -1,4 +1,5 @@
 mod browser;
+mod browser_order;
 mod credentials;
 mod releases;
 mod runtime_descriptor;
@@ -480,6 +481,7 @@ pub fn run() {
     let app = tauri::Builder::default()
         .manage(RevealRequested::default())
         .manage(url_router::UrlInbox::default())
+        .manage(url_router::ChooserPresentation::default())
         .manage(releases::UpdateCoordinator::default())
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             url_router::receive(
@@ -488,7 +490,12 @@ pub fn run() {
                     .filter(|value| value.starts_with("http://") || value.starts_with("https://"))
                     .cloned(),
             );
-            if background_requested(argv) {
+            // Link launches are revealed only after the compact chooser is ready.
+            if argv
+                .iter()
+                .any(|value| value.starts_with("http://") || value.starts_with("https://"))
+                || background_requested(argv)
+            {
                 return;
             }
             app.state::<RevealRequested>()
@@ -505,8 +512,11 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             url_router::pending_browser_urls,
+            url_router::present_browser_chooser,
             url_router::dismiss_browser_url,
             url_router::installed_browsers,
+            browser_order::browser_order,
+            browser_order::save_browser_order,
             url_router::validate_browser_application,
             url_router::open_browser_url,
             url_router::default_browser_status,
