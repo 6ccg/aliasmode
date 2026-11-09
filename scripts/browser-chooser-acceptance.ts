@@ -259,6 +259,7 @@ try {
     await page.evaluate(() => (window as any).preview.add("https://warm.example/link"));
     await page.getByRole("dialog").waitFor();
     await page.waitForFunction(() => (window as any).preview.presented && document.body.classList.contains("browser-chooser-active"));
+    await page.locator("#background").waitFor({state: "hidden"});
     assert.equal(await page.locator("#background").isVisible(), false, "Warm chooser hides the dashboard");
     await page.evaluate(() => (window as any).preview.nativeClose());
     await dismissed(page);
@@ -274,6 +275,8 @@ try {
     await focused(page, "#background");
     await page.evaluate(() => (window as any).preview.add("https://warm.example/uninstrumented"));
     await page.waitForFunction(() => (window as any).preview.presented && document.body.classList.contains("browser-chooser-active"));
+    await page.locator("#background").waitFor({state: "hidden"});
+    assert.equal(await page.locator("#background").isVisible(), false, "Uninstrumented warm chooser hides the dashboard");
     await page.evaluate(() => (window as any).preview.nativeClose());
     await dismissed(page);
     await focused(page, "#background");
@@ -379,9 +382,11 @@ try {
     await withinViewport(page);
     await snapshot("many-profiles");
     await page.getByRole("textbox", {name: "Find a profile"}).fill("no such profile");
+    await page.getByText("No matching profiles.", {exact: true}).waitFor();
     assert.equal(await page.locator(".profile-choice").count(), 0);
     assert(await page.getByText("No matching profiles.", {exact: true}).isVisible());
     await page.getByRole("textbox", {name: "Find a profile"}).fill("profile 49");
+    await page.waitForFunction(() => document.querySelectorAll(".profile-choice").length === 1);
     assert.equal(await page.locator(".profile-choice").count(), 1);
     await page.locator(".profile-choice").click();
     await dismissed(page);
