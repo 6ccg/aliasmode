@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { readFileSync } from "node:fs";
 import { I18nProvider } from "./i18n.tsx";
-import { BrowserRoutingSettings, UrlRouter, orderedBrowsers, moveBrowser, readBrowserOrder, linkSummary } from "./url-router.tsx";
+import { BrowserRoutingSettings, UrlRouter, orderedBrowsers, moveBrowser, readBrowserOrder, linkSummary, scheduleDashboardFocus } from "./url-router.tsx";
 
 test("routing settings are a settings card; idle URL inbox has no floating entry point", () => {
   const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
@@ -96,9 +96,52 @@ test("chooser captures dashboard focus before hiding it and reveals it before re
   const capture = effect.indexOf("const previous = document.activeElement");
   const hide = effect.indexOf('document.body.classList.add("browser-chooser-active")');
   const reveal = effect.indexOf('document.body.classList.remove("browser-chooser-active")');
-  const restore = effect.indexOf("previous?.focus()");
+  const restore = effect.indexOf("scheduleDashboardFocus(previous");
   expect(capture).toBeGreaterThan(-1);
   expect(hide).toBeGreaterThan(capture);
   expect(reveal).toBeGreaterThan(hide);
   expect(restore).toBeGreaterThan(reveal);
+});
+
+
+test("deferred dashboard focus waits for visibility and cannot steal focus after reopening", () => {
+  const keys = ["requestAnimationFrame", "cancelAnimationFrame", "getComputedStyle"] as const;
+  const descriptors = keys.map(key => Object.getOwnPropertyDescriptor(globalThis, key));
+  let callback: FrameRequestCallback = () => {};
+  let active = false;
+  let visibility = "visible";
+  let focused = 0;
+  const previous = {isConnected: true, getClientRects: () => [1], focus: () => focused++} as unknown as HTMLElement;
+  Object.defineProperty(globalThis, "requestAnimationFrame", {configurable: true, value: (fn: FrameRequestCallback) => { callback = fn; return 1; }});
+  Object.defineProperty(globalThis, "cancelAnimationFrame", {configurable: true, value: () => {}});
+  Object.defineProperty(globalThis, "getComputedStyle", {configurable: true, value: () => ({visibility})});
+  try {
+    scheduleDashboardFocus(previous, () => active);
+    expect(focused).toBe(0);
+    callback(0);
+    expect(focused).toBe(1);
+    scheduleDashboardFocus(previous, () => active);
+    active = true; // A new URL arrives before React has committed its chooser.
+    callback(0);
+    expect(focused).toBe(1);
+    active = false;
+    const cancel = scheduleDashboardFocus(previous, () => active);
+    cancel(); // Reopening cancels the old frame, even if it was already dispatched.
+    callback(0);
+    expect(focused).toBe(1);
+    visibility = "hidden";
+    scheduleDashboardFocus(previous, () => active);
+    callback(0);
+    expect(focused).toBe(1);
+    visibility = "visible";
+    Object.assign(previous, {isConnected: false});
+    scheduleDashboardFocus(previous, () => active);
+    callback(0);
+    expect(focused).toBe(1);
+  } finally {
+    keys.forEach((key, index) => {
+      if (descriptors[index]) Object.defineProperty(globalThis, key, descriptors[index]!);
+      else Reflect.deleteProperty(globalThis, key);
+    });
+  }
 });

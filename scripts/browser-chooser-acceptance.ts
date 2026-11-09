@@ -42,16 +42,19 @@ const state = window.preview = {
 };
 // Test-only lifecycle tracing: keep production components free of diagnostic hooks.
 const focusTrace = state.focusTrace = [];
+const traceEnabled = !params.has("no-focus-trace");
 const describeFocus = element => element ? {
   tag: element.tagName, id: element.id, className: element.className,
   connected: element.isConnected,
 } : null;
 const traceFocus = (kind, target, detail = {}) => {
+  if (!traceEnabled) return;
   focusTrace.push({time: performance.now(), kind, target: describeFocus(target),
     active: describeFocus(document.activeElement), bodyClass: document.body.className,
     documentFocused: document.hasFocus(), ...detail});
   if (focusTrace.length > 300) focusTrace.shift();
 };
+if (traceEnabled) {
 for (const event of ["focusin", "focusout"]) document.addEventListener(event, e => {
   traceFocus(event, e.target, {relatedTarget: describeFocus(e.relatedTarget)});
 }, true);
@@ -74,6 +77,7 @@ for (const method of ["add", "remove"]) {
 }
 new MutationObserver(() => traceFocus("root-mutation", document.getElementById("root")))
   .observe(document.getElementById("root"), {childList: true});
+}
 const callbacks = new Map();
 const listeners = new Map();
 let callbackId = 0;
@@ -88,7 +92,7 @@ window.__TAURI_INTERNALS__ = {
   transformCallback: callback => { const id = ++callbackId; callbacks.set(id, callback); return id; },
   invoke: async (command, args) => {
   state.calls.push({command, args});
-  if (["present_browser_chooser", "finish_browser_chooser", "dismiss_browser_url"].includes(command)) traceFocus("native-" + command, document.activeElement, {args});
+  if (traceEnabled && ["present_browser_chooser", "finish_browser_chooser", "dismiss_browser_url"].includes(command)) traceFocus("native-" + command, document.activeElement, {args});
   if (command === "plugin:event|listen") {
     if (args.event !== "browser-chooser-close-requested" || args.target.label !== "main") throw new Error("Unexpected event subscription");
     if (state.listenerDelay) await new Promise(resolve => setTimeout(resolve, state.listenerDelay));
@@ -160,6 +164,7 @@ async function dismissed(page: Page) {
   await page.locator("#background").waitFor({state: "visible"});
 }
 async function focused(page: Page, selector: string) {
+  await page.waitForFunction(s => document.activeElement?.matches(s), selector);
   assert(await page.evaluate(s => document.activeElement?.matches(s), selector), `Expected focus on ${selector}`);
 }
 try {
@@ -260,6 +265,18 @@ try {
     assert(await page.locator("#background").isVisible(), "Warm dismissal restores the dashboard");
     await focused(page, "#background");
     assert.equal(await page.evaluate(() => (window as any).preview.calls.filter((c: any) => c.command === "dismiss_browser_url").length), 3);
+
+    // Repeat warm restoration with no focus/class monkeypatches installed.
+    await visit("?no-focus-trace");
+    await page.evaluate(() => (window as any).preview.nativeClose());
+    await dismissed(page);
+    await page.locator("#background").focus();
+    await focused(page, "#background");
+    await page.evaluate(() => (window as any).preview.add("https://warm.example/uninstrumented"));
+    await page.waitForFunction(() => (window as any).preview.presented && document.body.classList.contains("browser-chooser-active"));
+    await page.evaluate(() => (window as any).preview.nativeClose());
+    await dismissed(page);
+    await focused(page, "#background");
 
     await visit("?duplicate");
     await page.evaluate(() => { const s = (window as any).preview; s.fail = true; s.delay = 300; });

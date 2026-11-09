@@ -36,6 +36,17 @@ export function isRoutableUrl(value: unknown): value is string {
   try { const url = new URL(value); return ["http:", "https:"].includes(url.protocol) && !!url.hostname && !url.username && !url.password; } catch { return false; }
 }
 
+/** Restore only after the dashboard's visibility change has reached the browser. */
+export function scheduleDashboardFocus(previous: HTMLElement | null, chooserActive: () => boolean): () => void {
+  let cancelled = false;
+  const frame = requestAnimationFrame(() => {
+    if (cancelled || chooserActive() || !previous?.isConnected) return;
+    if (getComputedStyle(previous).visibility !== "visible" || !previous.getClientRects().length) return;
+    previous.focus();
+  });
+  return () => { cancelled = true; cancelAnimationFrame(frame); };
+}
+
 export function UrlRouter({ profiles, local }: { profiles: UiProfile[]; local: boolean }) {
   const { t } = useTranslation();
   const invoke = (window as any).__TAURI_INTERNALS__?.invoke as Invoke | undefined;
@@ -54,6 +65,7 @@ export function UrlRouter({ profiles, local }: { profiles: UiProfile[]; local: b
   const [filter, setFilter] = useState("");
   const [showFullUrl, setShowFullUrl] = useState(false);
   const dialog = useRef<HTMLElement>(null);
+  const cancelFocusRestore = useRef<(() => void) | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const operationBusy = useRef(false);
@@ -111,12 +123,14 @@ export function UrlRouter({ profiles, local }: { profiles: UiProfile[]; local: b
   const chooserVisible = !!pending || restoring;
   useEffect(() => {
     if (!chooserVisible) return;
+    cancelFocusRestore.current?.();
     // Hiding the root can blur its focused control. Capture it before changing visibility.
     const previous = document.activeElement as HTMLElement | null;
     document.body.classList.add("browser-chooser-active");
     return () => {
       document.body.classList.remove("browser-chooser-active");
-      previous?.focus();
+      cancelFocusRestore.current = scheduleDashboardFocus(previous, () =>
+        queue.current.length > 0 || document.body.classList.contains("browser-chooser-active"));
     };
   }, [chooserVisible]);
   useEffect(() => {
