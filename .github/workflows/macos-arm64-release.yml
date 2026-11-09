@@ -2,7 +2,7 @@ name: Build macOS ARM64 preview
 
 on:
   push:
-    branches: [prepare/beta74-mod1]
+    branches: [prepare/beta74-mod1, fix/native-chooser-and-profile-launchers]
   workflow_dispatch:
 
 permissions:
@@ -18,6 +18,10 @@ env:
 
 jobs:
   release:
+    if: >-
+      github.event_name != 'push' ||
+      github.ref != 'refs/heads/fix/native-chooser-and-profile-launchers' ||
+      github.event.head_commit.message == 'build: diagnose warm chooser focus on macOS ARM64'
     name: Build and verify Apple Silicon preview
     runs-on: macos-15
     timeout-minutes: 90
@@ -49,6 +53,8 @@ jobs:
           test "$(jq -r .version package.json)" = "$VERSION"
           bun run typecheck
           bun test version.test.ts create.test.ts ui.test.ts url-routing.test.ts random-fingerprint.test.ts web/url-router.test.tsx web/profile-routing-info.test.ts url-router-native.test.ts browser-order-native.test.ts
+          bun test dock-badges.test.ts
+          bun test launcher.test.ts launcher-firefox.test.ts --test-name-pattern 'Dock badge'
       - name: Verify compact chooser interactions and fit
         run: CHOOSER_ARTIFACT_DIR="$RUNNER_TEMP/chooser-ui" bun scripts/browser-chooser-acceptance.ts
       - name: Upload chooser UI verification

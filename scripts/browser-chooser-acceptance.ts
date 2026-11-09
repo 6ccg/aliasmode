@@ -40,6 +40,40 @@ const state = window.preview = {
   listenerFailures: params.has("listener-failure") ? 1 : 0,
   add: value => state.urls.push(link(value)),
 };
+// Test-only lifecycle tracing: keep production components free of diagnostic hooks.
+const focusTrace = state.focusTrace = [];
+const describeFocus = element => element ? {
+  tag: element.tagName, id: element.id, className: element.className,
+  connected: element.isConnected,
+} : null;
+const traceFocus = (kind, target, detail = {}) => {
+  focusTrace.push({time: performance.now(), kind, target: describeFocus(target),
+    active: describeFocus(document.activeElement), bodyClass: document.body.className,
+    documentFocused: document.hasFocus(), ...detail});
+  if (focusTrace.length > 300) focusTrace.shift();
+};
+for (const event of ["focusin", "focusout"]) document.addEventListener(event, e => {
+  traceFocus(event, e.target, {relatedTarget: describeFocus(e.relatedTarget)});
+}, true);
+const originalFocus = HTMLElement.prototype.focus;
+HTMLElement.prototype.focus = function (...args) {
+  traceFocus("focus-call-before", this, {stack: new Error().stack});
+  const result = originalFocus.apply(this, args);
+  traceFocus("focus-call-after", this);
+  return result;
+};
+for (const method of ["add", "remove"]) {
+  const original = DOMTokenList.prototype[method];
+  DOMTokenList.prototype[method] = function (...tokens) {
+    const tracked = this === document.body.classList && tokens.includes("browser-chooser-active");
+    if (tracked) traceFocus("body-class-" + method + "-before", document.body);
+    const result = original.apply(this, tokens);
+    if (tracked) traceFocus("body-class-" + method + "-after", document.body);
+    return result;
+  };
+}
+new MutationObserver(() => traceFocus("root-mutation", document.getElementById("root")))
+  .observe(document.getElementById("root"), {childList: true});
 const callbacks = new Map();
 const listeners = new Map();
 let callbackId = 0;
@@ -54,6 +88,7 @@ window.__TAURI_INTERNALS__ = {
   transformCallback: callback => { const id = ++callbackId; callbacks.set(id, callback); return id; },
   invoke: async (command, args) => {
   state.calls.push({command, args});
+  if (["present_browser_chooser", "finish_browser_chooser", "dismiss_browser_url"].includes(command)) traceFocus("native-" + command, document.activeElement, {args});
   if (command === "plugin:event|listen") {
     if (args.event !== "browser-chooser-close-requested" || args.target.label !== "main") throw new Error("Unexpected event subscription");
     if (state.listenerDelay) await new Promise(resolve => setTimeout(resolve, state.listenerDelay));
@@ -373,7 +408,7 @@ try {
         return {html: element.outerHTML, visibility: style.visibility, display: style.display, bounds: element.getBoundingClientRect().toJSON()};
       };
       return {bodyClass: document.body.className, presented: state?.presented, urls: state?.urls, calls: state?.calls,
-        activeElement: document.activeElement?.outerHTML ?? null,
+        activeElement: document.activeElement?.outerHTML ?? null, focusTrace: state?.focusTrace,
         background: describe("#background"), root: describe("#root"), dialog: describe('[role="dialog"]')};
     }), null, 2)).catch(() => {});
   }
