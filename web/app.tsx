@@ -4882,6 +4882,7 @@ function App() {
                     <span>{t("Custom NO.")}</span>
                     <input
                       value={form.customNo}
+                      title={t("Also used for running Chromium Dock badges on macOS")}
                       inputMode="numeric"
                       maxLength={MAX_CUSTOM_NO}
                       placeholder="auto"
@@ -5066,6 +5067,7 @@ function App() {
                         <span>{t("Custom NO.")}</span>
                         <input
                           value={editForm.customNo ?? ""}
+                          title={t("Also used for running Chromium Dock badges on macOS")}
                           inputMode="numeric"
                           maxLength={MAX_CUSTOM_NO}
                           placeholder={editSerial != null ? String(editSerial) : "auto"}

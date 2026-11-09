@@ -121,7 +121,8 @@ export interface Profile {
   tags?: string[];
   /**
    * Operator-chosen serial ("custom NO.") shown in the roster and prefixed onto
-   * the launched browser's window title / identity bookmark. Digits only, so it
+   * the launched browser's window title / identity bookmark and macOS Chromium
+   * running Dock badge. Digits only, so it
    * reads as a number wherever it is displayed. Empty/absent means the profile
    * falls back to its store serial (the SQLite rowid).
    */

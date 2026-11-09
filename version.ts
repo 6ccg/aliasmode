@@ -1,1 +1,1 @@
-export const ALIASMODE_VERSION = "0.1.0-beta.74.mod1";
+export const ALIASMODE_VERSION = "0.1.0-beta.74.mod2";

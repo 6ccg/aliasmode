@@ -14,7 +14,7 @@ concurrency:
 
 env:
   SOURCE_SHA: ${{ github.sha }}
-  VERSION: 0.1.0-beta.74.mod1
+  VERSION: 0.1.0-beta.74.mod2
 
 jobs:
   release:
