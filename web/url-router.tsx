@@ -39,11 +39,21 @@ export function isRoutableUrl(value: unknown): value is string {
 /** Restore only after the dashboard's visibility change has reached the browser. */
 export function scheduleDashboardFocus(previous: HTMLElement | null, chooserActive: () => boolean): () => void {
   let cancelled = false;
-  const frame = requestAnimationFrame(() => {
-    if (cancelled || chooserActive() || !previous?.isConnected) return;
-    if (getComputedStyle(previous).visibility !== "visible" || !previous.getClientRects().length) return;
+  const deadline = performance.now() + 1000;
+  let frame: number;
+  const restore = (now: number) => {
+    if (cancelled || chooserActive() || !previous?.isConnected || now >= deadline) return;
+    // A user-selected dashboard control takes priority over delayed restoration.
+    if (document.activeElement && document.activeElement !== document.body && document.activeElement !== previous) return;
+    // Removing the class need not make the target focusable in the first frame.
+    // Recheck the actual visibility, bounded and cancellable if another chooser opens.
+    if (getComputedStyle(previous).visibility !== "visible" || !previous.getClientRects().length) {
+      frame = requestAnimationFrame(restore);
+      return;
+    }
     previous.focus();
-  });
+  };
+  frame = requestAnimationFrame(restore);
   return () => { cancelled = true; cancelAnimationFrame(frame); };
 }
 

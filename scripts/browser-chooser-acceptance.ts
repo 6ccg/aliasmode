@@ -55,6 +55,33 @@ const traceFocus = (kind, target, detail = {}) => {
   if (focusTrace.length > 300) focusTrace.shift();
 };
 if (traceEnabled) {
+// Observe reads the production helper already makes; do not add layout queries.
+const originalGetComputedStyle = window.getComputedStyle;
+window.getComputedStyle = function (element, ...args) {
+  const result = originalGetComputedStyle.call(this, element, ...args);
+  if (element.id === "background") traceFocus("computed-style-read", element, {visibility: result.visibility});
+  return result;
+};
+const originalGetClientRects = Element.prototype.getClientRects;
+Element.prototype.getClientRects = function (...args) {
+  const result = originalGetClientRects.apply(this, args);
+  if (this.id === "background") traceFocus("client-rects-read", this, {length: result.length});
+  return result;
+};
+const originalRequestFrame = window.requestAnimationFrame;
+const originalCancelFrame = window.cancelAnimationFrame;
+window.requestAnimationFrame = function (callback) {
+  const id = originalRequestFrame.call(this, time => {
+    traceFocus("frame-run", null, {id});
+    callback(time);
+  });
+  traceFocus("frame-request", null, {id, stack: new Error().stack});
+  return id;
+};
+window.cancelAnimationFrame = function (id) {
+  traceFocus("frame-cancel", null, {id});
+  return originalCancelFrame.call(this, id);
+};
 for (const event of ["focusin", "focusout"]) document.addEventListener(event, e => {
   traceFocus(event, e.target, {relatedTarget: describeFocus(e.relatedTarget)});
 }, true);

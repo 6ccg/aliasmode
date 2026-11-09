@@ -105,12 +105,15 @@ test("chooser captures dashboard focus before hiding it and reveals it before re
 
 
 test("deferred dashboard focus waits for visibility and cannot steal focus after reopening", () => {
-  const keys = ["requestAnimationFrame", "cancelAnimationFrame", "getComputedStyle"] as const;
+  const keys = ["requestAnimationFrame", "cancelAnimationFrame", "getComputedStyle", "document"] as const;
   const descriptors = keys.map(key => Object.getOwnPropertyDescriptor(globalThis, key));
   let callback: FrameRequestCallback = () => {};
   let active = false;
   let visibility = "visible";
   let focused = 0;
+  const body = {};
+  const fakeDocument = {body, activeElement: body};
+  Object.defineProperty(globalThis, "document", {configurable: true, value: fakeDocument});
   const previous = {isConnected: true, getClientRects: () => [1], focus: () => focused++} as unknown as HTMLElement;
   Object.defineProperty(globalThis, "requestAnimationFrame", {configurable: true, value: (fn: FrameRequestCallback) => { callback = fn; return 1; }});
   Object.defineProperty(globalThis, "cancelAnimationFrame", {configurable: true, value: () => {}});
@@ -134,10 +137,38 @@ test("deferred dashboard focus waits for visibility and cannot steal focus after
     callback(0);
     expect(focused).toBe(1);
     visibility = "visible";
+    callback(0); // A later frame sees the restored style and completes focus.
+    expect(focused).toBe(2);
+    visibility = "hidden";
+    const cancelWaiting = scheduleDashboardFocus(previous, () => active);
+    callback(0);
+    cancelWaiting();
+    visibility = "visible";
+    callback(0);
+    expect(focused).toBe(2);
+    visibility = "hidden";
+    scheduleDashboardFocus(previous, () => active);
+    callback(0);
+    active = true;
+    visibility = "visible";
+    callback(0);
+    expect(focused).toBe(2);
+    active = false;
+    scheduleDashboardFocus(previous, () => active);
+    callback(performance.now() + 1001); // Do not restore after the finite deadline.
+    expect(focused).toBe(2);
+    visibility = "hidden";
+    scheduleDashboardFocus(previous, () => active);
+    callback(0);
+    fakeDocument.activeElement = {}; // User focuses a different dashboard control while waiting.
+    visibility = "visible";
+    callback(0);
+    expect(focused).toBe(2);
+    fakeDocument.activeElement = body;
     Object.assign(previous, {isConnected: false});
     scheduleDashboardFocus(previous, () => active);
     callback(0);
-    expect(focused).toBe(1);
+    expect(focused).toBe(2);
   } finally {
     keys.forEach((key, index) => {
       if (descriptors[index]) Object.defineProperty(globalThis, key, descriptors[index]!);
