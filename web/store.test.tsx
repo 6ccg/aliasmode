@@ -904,7 +904,7 @@ test("Local mode keeps the Proxies page as before: the tools and the NobleProxy 
 });
 
 test("the sidebar has one Proxies item and no Wallet or Logs item; logs open from Settings", async () => {
-  const app = await Bun.file(new URL("./app.tsx", import.meta.url)).text();
+  const app = (await Bun.file(new URL("./app.tsx", import.meta.url)).text()).replaceAll("\r\n", "\n");
   const start = app.indexOf('<nav className="sidenav"');
   const sidebar = app.slice(start, app.indexOf("</nav>", start));
   expect(sidebar).toContain('<span className="navlabel">{t("Proxies")}</span>');
@@ -972,7 +972,7 @@ test("buttons inside the store open the shop as my-proxies-buy-more and success-
 
 test("the Buy tab view and the app's entry points record their src (wiring in the page and the app)", async () => {
   const store = await Bun.file(new URL("./store.tsx", import.meta.url)).text();
-  const app = await Bun.file(new URL("./app.tsx", import.meta.url)).text();
+  const app = (await Bun.file(new URL("./app.tsx", import.meta.url)).text()).replaceAll("\r\n", "\n");
   // store_view: each time the Buy tab is on screen for an owner with a catalog, with the src that opened it.
   expect(store).toContain('const shopShown = active && tab === "buy" && owner && !!state.catalog;');
   expect(store).toContain('useEffect(() => { if (shopShown) trackStoreEvent("store_view", src); }, [shopShown, src, entryKey]);');

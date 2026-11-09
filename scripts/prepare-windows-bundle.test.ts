@@ -59,7 +59,7 @@ test("one sidecar program also runs the MCP helper behind the aliasmode-mcp laun
   const repo = join(import.meta.dir, "..");
   const tauri = JSON.parse(readFileSync(join(repo, "src-tauri", "tauri.conf.json"), "utf8"));
   expect(tauri.bundle.externalBin).toEqual(["binaries/aliasmode-sidecar"]);
-  const cargo = readFileSync(join(repo, "src-tauri", "Cargo.toml"), "utf8");
+  const cargo = readFileSync(join(repo, "src-tauri", "Cargo.toml"), "utf8").replaceAll("\r\n", "\n");
   expect(cargo).toContain(`default-run = "aliasmode"`);
   expect(cargo).toContain(`name = "aliasmode-mcp"\npath = "src/bin/aliasmode-mcp.rs"`);
   const launcher = readFileSync(join(repo, "src-tauri", "src", "bin", "aliasmode-mcp.rs"), "utf8");

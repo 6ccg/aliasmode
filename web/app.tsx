@@ -5195,9 +5195,9 @@ function App() {
                       <input type="checkbox" checked={editForm.randomizeFingerprintOnLaunch === "true"}
                         disabled={editSaving || editLive}
                         onChange={(event) => setEF("randomizeFingerprintOnLaunch", String(event.target.checked))} />
-                      <span>Randomize fingerprint on each new launch</span>
+                      <span>{t("Randomize fingerprint on each new launch")}</span>
                     </label>
-                    <small className="muted">Regenerates the supported device configuration, screen and CPU on each fresh launch, replacing manual device overrides. Firefox also rebuilds its generated graphics and device config. Keeps cookies, OS, proxy and language. Exact computer model and every hardware field cannot be randomized. Existing logins can still identify you; changes may trigger account checks. Does not affect regular external browsers.</small>
+                    <small className="muted">{t("Regenerates the supported device configuration, screen and CPU on each fresh launch, replacing manual device overrides. Firefox also rebuilds its generated graphics and device config. Keeps cookies, OS, proxy and language. Exact computer model and every hardware field cannot be randomized. Existing logins can still identify you; changes may trigger account checks. Does not affect regular external browsers.")}</small>
                   </div>}
                   {editEngine === "chromium" && editExtensionChoices.length > 0 && (
                     <div className="fld">

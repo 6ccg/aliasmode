@@ -1,4 +1,7 @@
 {
+  "Randomize fingerprint on each new launch": "每次全新启动时随机生成指纹",
+  "Off by default. When enabled, supported device fields, screen and CPU change on each fresh launch, replacing manual device overrides. Cookies, OS, proxy and language stay unchanged. Existing logins can still identify you; changes may trigger account checks.": "默认关闭。启用后，每次全新启动都会重新生成支持的设备字段、屏幕和 CPU 配置，替换手动设置。Cookie、系统、代理和语言保持不变。已有登录仍可识别身份，指纹变化可能触发账号验证。",
+  "Regenerates the supported device configuration, screen and CPU on each fresh launch, replacing manual device overrides. Firefox also rebuilds its generated graphics and device config. Keeps cookies, OS, proxy and language. Exact computer model and every hardware field cannot be randomized. Existing logins can still identify you; changes may trigger account checks. Does not affect regular external browsers.": "每次全新启动都会重新生成支持的设备、屏幕和 CPU 配置，替换手动设置。Firefox 还会重建生成的显卡与设备配置。Cookie、系统、代理和语言保持不变。无法随机生成精确的电脑型号或所有硬件字段。已有登录仍可识别身份，变化可能触发账号验证。不影响普通外部浏览器。",
   "Also used for running Chromium Dock badges on macOS": "也用于 macOS 上运行中的 Chromium Dock 编号气泡",
   "language.label": "语言",
   "language.nativeName": "简体中文",

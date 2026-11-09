@@ -31,12 +31,12 @@ test("release version and updater trust stay aligned across the desktop bundle",
   const releasesSource = readFileSync(join(root, "src-tauri", "src", "releases.rs"), "utf8");
   const releaseWorkflow = readFileSync(join(root, ".github", "workflows", "release-candidate.yml"), "utf8")
     .replaceAll("\r\n", "\n");
-  const ciWorkflow = readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8");
+  const ciWorkflow = readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8").replaceAll("\r\n", "\n");
   const compatibilityWorkflow = readFileSync(
     join(root, ".github", "workflows", "client-compatibility.yml"),
     "utf8",
   );
-  const installedAcceptance = readFileSync(join(root, "scripts", "windows-installed-acceptance.ps1"), "utf8");
+  const installedAcceptance = readFileSync(join(root, "scripts", "windows-installed-acceptance.ps1"), "utf8").replaceAll("\r\n", "\n");
   const previousUpgradeAcceptance = readFileSync(
     join(root, "scripts", "windows-previous-upgrade-acceptance.ps1"),
     "utf8",

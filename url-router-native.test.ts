@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 
-const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
+const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replaceAll("\r\n", "\n");
 const router = read("./src-tauri/src/url_router.rs");
 const main = read("./src-tauri/src/lib.rs");
 const shutdown = read("./src-tauri/src/shutdown.rs");

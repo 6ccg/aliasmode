@@ -16,7 +16,7 @@ test("every zh-CN key is an English string used in the web source", async () => 
     ["app.tsx", "proxies.tsx", "scripts.tsx", "trash.tsx", "proxy-offer.tsx", "store.tsx", "services.tsx", "desktop-update-result.ts", "url-router.tsx"]
       .map((file) => Bun.file(new URL(`./${file}`, import.meta.url)).text()),
   );
-  const source = sources.join("\n");
+  const source = sources.join("\n").replaceAll("\r\n", "\n");
   const stale = Object.keys(tables["zh-CN"]).filter((key) => !key.startsWith("language.") && !source.includes(key));
   expect(stale).toEqual([]);
 });
@@ -24,6 +24,17 @@ test("every zh-CN key is an English string used in the web source", async () => 
 test("t() returns the translation for the active language", () => {
   expect(translate(tables, "zh-CN", "Appearance")).toBe(tables["zh-CN"]!["Appearance"]!);
   expect(translate(tables, "en-US", "Appearance")).toBe("Appearance");
+});
+
+test("fingerprint rotation controls use Chinese in both creation and editing", async () => {
+  const app = await Bun.file(new URL("./app.tsx", import.meta.url)).text();
+  const label = "Randomize fingerprint on each new launch";
+  expect(app.split(`{t("${label}")}`).length - 1).toBe(2);
+  expect(translate(tables, "zh-CN", label)).toBe("每次全新启动时随机生成指纹");
+  for (const key of Object.keys(tables["zh-CN"]).filter(key => key.startsWith("Off by default. When enabled,") || key.startsWith("Regenerates the supported device configuration,"))) {
+    expect(translate(tables, "zh-CN", key)).not.toBe(key);
+    expect(app).toContain(`t("${key}")`);
+  }
 });
 
 test("t() falls back to English for missing keys", () => {

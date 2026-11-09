@@ -125,15 +125,20 @@ pub fn save_browser_order(
 mod tests {
     use super::*;
 
+    fn app_path(name: &str) -> String {
+        std::env::temp_dir()
+            .join(format!("{name}.app"))
+            .to_str()
+            .unwrap()
+            .to_owned()
+    }
+
     #[test]
     fn missing_file_and_restart_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("preferences/browser-order.json");
         assert_eq!(read_order(&path).unwrap(), Vec::<String>::new());
-        let order = vec![
-            "/Applications/Firefox.app".into(),
-            "/Applications/Safari.app".into(),
-        ];
+        let order = vec![app_path("Firefox"), app_path("Safari")];
         write_order(&path, order.clone()).unwrap();
         assert_eq!(read_order(&path).unwrap(), order);
         assert_eq!(
@@ -148,8 +153,8 @@ mod tests {
 
     #[test]
     fn deduplicates_without_reordering() {
-        let a = "/Applications/A.app".to_owned();
-        let b = "/Applications/B.app".to_owned();
+        let a = app_path("A");
+        let b = app_path("B");
         assert_eq!(
             validate_order(vec![b.clone(), a.clone(), b.clone()]).unwrap(),
             vec![b, a]
@@ -171,10 +176,11 @@ mod tests {
             assert!(validate_order(vec![bad.into()]).is_err(), "{bad:?}");
         }
         assert!(validate_order(vec!["/A.app".into(); 101]).is_err());
-        let limit = format!("/{}.app", "a".repeat(MAX_PATH_BYTES - 5));
+        let base = app_path("");
+        let limit = app_path(&"a".repeat(MAX_PATH_BYTES - base.len()));
         assert!(validate_order(vec![limit.clone()]).is_ok());
-        assert!(validate_order(vec![format!("/{limit}")]).is_err());
-        assert!(validate_order(vec!["/Applications/浏览器.app".into()]).is_ok());
+        assert!(validate_order(vec![format!("{limit}.app")]).is_err());
+        assert!(validate_order(vec![app_path("浏览器")]).is_ok());
     }
 
     #[test]
@@ -201,7 +207,7 @@ mod tests {
     fn failed_save_preserves_existing_order() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("browser-order.json");
-        let order = vec!["/Applications/A.app".into()];
+        let order = vec![app_path("A")];
         write_order(&path, order.clone()).unwrap();
         assert!(write_order(&path, vec!["relative.app".into()]).is_err());
         assert_eq!(read_order(&path).unwrap(), order);

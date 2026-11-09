@@ -1061,7 +1061,7 @@ test("Firefox shows its screen, editable at creation and when editing", () => {
 });
 
 test("Services page sits in the sidebar, can be hidden, and links only through aliasmode.com/go/", () => {
-  const services = readFileSync(join(import.meta.dir, "web", "services.tsx"), "utf8");
+  const services = readFileSync(join(import.meta.dir, "web", "services.tsx"), "utf8").replaceAll("\r\n", "\n");
   const shell = readFileSync(join(import.meta.dir, "src-tauri", "src", "lib.rs"), "utf8");
   expect(app).toContain('{!appMode?.servicesHidden && <button type="button" className={`navitem${view === "services" ? " active" : ""}`}');
   expect(app).toContain('<ServicesPage active={view === "services"} />');
