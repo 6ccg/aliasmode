@@ -52,6 +52,9 @@ export function scheduleDashboardFocus(previous: HTMLElement | null, chooserActi
       return;
     }
     previous.focus();
+    // Browsers may silently reject focus while restoring visibility. Success is
+    // the active element, not the focus() call; keep the same deadline and guards.
+    if (document.activeElement !== previous) frame = requestAnimationFrame(restore);
   };
   frame = requestAnimationFrame(restore);
   return () => { cancelled = true; cancelAnimationFrame(frame); };

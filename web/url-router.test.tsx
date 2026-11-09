@@ -111,11 +111,17 @@ test("deferred dashboard focus waits for visibility and cannot steal focus after
   let active = false;
   let visibility = "visible";
   let focused = 0;
+  let rejectedFocusCalls = 0;
+  let framesRequested = 0;
   const body = {};
   const fakeDocument = {body, activeElement: body};
   Object.defineProperty(globalThis, "document", {configurable: true, value: fakeDocument});
-  const previous = {isConnected: true, getClientRects: () => [1], focus: () => focused++} as unknown as HTMLElement;
-  Object.defineProperty(globalThis, "requestAnimationFrame", {configurable: true, value: (fn: FrameRequestCallback) => { callback = fn; return 1; }});
+  const previous = {isConnected: true, getClientRects: () => [1], focus: () => {
+    focused++;
+    if (rejectedFocusCalls > 0) rejectedFocusCalls--;
+    else fakeDocument.activeElement = previous;
+  }} as unknown as HTMLElement;
+  Object.defineProperty(globalThis, "requestAnimationFrame", {configurable: true, value: (fn: FrameRequestCallback) => { callback = fn; return ++framesRequested; }});
   Object.defineProperty(globalThis, "cancelAnimationFrame", {configurable: true, value: () => {}});
   Object.defineProperty(globalThis, "getComputedStyle", {configurable: true, value: () => ({visibility})});
   try {
@@ -169,6 +175,28 @@ test("deferred dashboard focus waits for visibility and cannot steal focus after
     scheduleDashboardFocus(previous, () => active);
     callback(0);
     expect(focused).toBe(2);
+    Object.assign(previous, {isConnected: true});
+    rejectedFocusCalls = 1;
+    scheduleDashboardFocus(previous, () => active);
+    const beforeRejected = framesRequested;
+    callback(0);
+    expect(focused).toBe(3);
+    expect(fakeDocument.activeElement).toBe(body);
+    expect(framesRequested).toBe(beforeRejected + 1);
+    callback(0); // The next frame accepts focus, so no further frame is requested.
+    expect(focused).toBe(4);
+    expect(fakeDocument.activeElement).toBe(previous);
+    expect(framesRequested).toBe(beforeRejected + 1);
+    fakeDocument.activeElement = body;
+    rejectedFocusCalls = Infinity;
+    scheduleDashboardFocus(previous, () => active);
+    callback(0);
+    expect(focused).toBe(5);
+    expect(fakeDocument.activeElement).toBe(body);
+    const beforeDeadline = framesRequested;
+    callback(performance.now() + 1001);
+    expect(focused).toBe(5);
+    expect(framesRequested).toBe(beforeDeadline);
   } finally {
     keys.forEach((key, index) => {
       if (descriptors[index]) Object.defineProperty(globalThis, key, descriptors[index]!);
