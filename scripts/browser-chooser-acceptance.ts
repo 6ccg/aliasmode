@@ -373,6 +373,7 @@ try {
         return {html: element.outerHTML, visibility: style.visibility, display: style.display, bounds: element.getBoundingClientRect().toJSON()};
       };
       return {bodyClass: document.body.className, presented: state?.presented, urls: state?.urls, calls: state?.calls,
+        activeElement: document.activeElement?.outerHTML ?? null,
         background: describe("#background"), root: describe("#root"), dialog: describe('[role="dialog"]')};
     }), null, 2)).catch(() => {});
   }

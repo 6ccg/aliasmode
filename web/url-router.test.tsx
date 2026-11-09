@@ -84,3 +84,21 @@ test("link summary removes tracking query and fragment without changing the URL"
   expect(linkSummary("http://localhost:8080/a")).toBe("localhost:8080/a");
   expect(url).toContain("token=private");
 });
+
+
+test("chooser captures dashboard focus before hiding it and reveals it before restoring focus", () => {
+  const router = readFileSync(new URL("./url-router.tsx", import.meta.url), "utf8");
+  const effectStart = router.indexOf("if (!chooserVisible) return;");
+  const effectEnd = router.indexOf("}, [chooserVisible]);", effectStart);
+  expect(effectStart).toBeGreaterThan(-1);
+  expect(effectEnd).toBeGreaterThan(effectStart);
+  const effect = router.slice(effectStart, effectEnd);
+  const capture = effect.indexOf("const previous = document.activeElement");
+  const hide = effect.indexOf('document.body.classList.add("browser-chooser-active")');
+  const reveal = effect.indexOf('document.body.classList.remove("browser-chooser-active")');
+  const restore = effect.indexOf("previous?.focus()");
+  expect(capture).toBeGreaterThan(-1);
+  expect(hide).toBeGreaterThan(capture);
+  expect(reveal).toBeGreaterThan(hide);
+  expect(restore).toBeGreaterThan(reveal);
+});

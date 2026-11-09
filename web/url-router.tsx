@@ -111,8 +111,9 @@ export function UrlRouter({ profiles, local }: { profiles: UiProfile[]; local: b
   const chooserVisible = !!pending || restoring;
   useEffect(() => {
     if (!chooserVisible) return;
-    document.body.classList.add("browser-chooser-active");
+    // Hiding the root can blur its focused control. Capture it before changing visibility.
     const previous = document.activeElement as HTMLElement | null;
+    document.body.classList.add("browser-chooser-active");
     return () => {
       document.body.classList.remove("browser-chooser-active");
       previous?.focus();
