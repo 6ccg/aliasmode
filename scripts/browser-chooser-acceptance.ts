@@ -120,6 +120,9 @@ async function withinViewport(page: Page) {
 async function dismissed(page: Page) {
   await page.getByRole("dialog").waitFor({state: "hidden"});
   await page.waitForFunction(() => !(window as any).preview.presented && !document.body.classList.contains("browser-chooser-active"));
+  // Native acknowledgement and effect cleanup are not the user-visible result.
+  // Wait for the dashboard itself, retaining a bounded failure if it stays hidden.
+  await page.locator("#background").waitFor({state: "visible"});
 }
 async function focused(page: Page, selector: string) {
   assert(await page.evaluate(s => document.activeElement?.matches(s), selector), `Expected focus on ${selector}`);
@@ -209,6 +212,19 @@ try {
     await page.evaluate(id => (window as any).preview.nativeClose(id), firstId);
     assert.equal(await page.evaluate(() => (window as any).preview.calls.filter((c: any) => c.command === "dismiss_browser_url").length), 2, "Late close after restoration is ignored");
     assert(await page.locator("#background").isVisible());
+    await page.locator("#background").focus();
+    await focused(page, "#background");
+
+    // A warm URL in the same document must hide, then restore, the dashboard again.
+    await page.evaluate(() => (window as any).preview.add("https://warm.example/link"));
+    await page.getByRole("dialog").waitFor();
+    await page.waitForFunction(() => (window as any).preview.presented && document.body.classList.contains("browser-chooser-active"));
+    assert.equal(await page.locator("#background").isVisible(), false, "Warm chooser hides the dashboard");
+    await page.evaluate(() => (window as any).preview.nativeClose());
+    await dismissed(page);
+    assert(await page.locator("#background").isVisible(), "Warm dismissal restores the dashboard");
+    await focused(page, "#background");
+    assert.equal(await page.evaluate(() => (window as any).preview.calls.filter((c: any) => c.command === "dismiss_browser_url").length), 3);
 
     await visit("?duplicate");
     await page.evaluate(() => { const s = (window as any).preview; s.fail = true; s.delay = 300; });
@@ -346,7 +362,20 @@ try {
   }
 } catch (error) {
   const page = browser?.contexts()[0]?.pages()[0];
-  if (page) await page.screenshot({path: join(artifacts, "failure.png")}).catch(() => {});
+  if (page) {
+    await page.screenshot({path: join(artifacts, "failure.png")}).catch(() => {});
+    await writeFile(join(artifacts, "failure-state.json"), JSON.stringify(await page.evaluate(() => {
+      const state = (window as any).preview;
+      const describe = (selector: string) => {
+        const element = document.querySelector(selector);
+        if (!element) return null;
+        const style = getComputedStyle(element);
+        return {html: element.outerHTML, visibility: style.visibility, display: style.display, bounds: element.getBoundingClientRect().toJSON()};
+      };
+      return {bodyClass: document.body.className, presented: state?.presented, urls: state?.urls, calls: state?.calls,
+        background: describe("#background"), root: describe("#root"), dialog: describe('[role="dialog"]')};
+    }), null, 2)).catch(() => {});
+  }
   throw error;
 } finally {
   await browser?.close();
