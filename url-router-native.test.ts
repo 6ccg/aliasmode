@@ -5,6 +5,8 @@ const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf
 const router = read("./src-tauri/src/url_router.rs");
 const main = read("./src-tauri/src/lib.rs");
 const shutdown = read("./src-tauri/src/shutdown.rs");
+const inbox = read("./src-tauri/src/url_inbox.rs");
+const frontend = read("./web/url-router.tsx");
 
 // These guard IPC wiring and lifetime invariants, not native window rendering.
 test("compact chooser command retains the existing main-window origin authorization", () => {
@@ -25,11 +27,17 @@ test("new URL intake never reveals the dashboard before chooser rendering", () =
   expect(instance.indexOf('value.starts_with("http://")', instance.indexOf("// Link launches"))).toBeLessThan(instance.indexOf("RevealRequested"));
 });
 
-test("dismissal restores the dashboard only after all pending links are consumed", () => {
-  const dismiss = router.slice(router.indexOf("pub fn dismiss_browser_url("), router.indexOf("pub struct Browser"));
-  expect(dismiss).toContain("pending.remove(index)");
-  expect(dismiss).toContain("if pending.is_empty() {\n        restore_dashboard(&window)?;");
+test("dismissal consumes one identity and restoration waits for frontend acknowledgement", () => {
+  const dismiss = router.slice(router.indexOf("pub fn dismiss_browser_url("), router.indexOf("pub fn finish_browser_chooser("));
+  expect(dismiss).toContain("pending.dismiss(id)");
+  expect(dismiss).not.toContain("restore_dashboard(&window)");
   expect(dismiss).not.toContain("pending.clear()");
+  expect(inbox).toContain("self.pending.first().is_some_and(|item| item.id == id)");
+  const finish = router.slice(router.indexOf("pub fn finish_browser_chooser("), router.indexOf("pub struct Browser"));
+  expect(finish).toContain("authorize(&window, &origin)?;");
+  expect(finish).toContain("if pending.is_empty() {\n        restore_dashboard(&window)?;");
+  expect(main).toContain("url_router::finish_browser_chooser,");
+  expect(read("./src-tauri/permissions/url-router.toml")).toContain('"finish_browser_chooser"');
 });
 
 test("temporary geometry restores original visibility and never steals browser focus", () => {
@@ -39,10 +47,31 @@ test("temporary geometry restores original visibility and never steals browser f
   expect(restore).not.toContain("set_focus");
 });
 
-test("native close during routing cannot terminate active browser profiles or discard links", () => {
-  expect(router).toContain("window.set_closable(false)?;");
+test("native close requests frontend dismissal without entering browser cleanup", () => {
+  expect(router).toContain("window.set_closable(true)?;");
+  expect(router).not.toContain("window.set_closable(false)?;");
   const guard = shutdown.slice(shutdown.indexOf("api.prevent_close()"), shutdown.indexOf("state.in_progress.swap"));
-  expect(guard).toContain("if crate::url_router::chooser_active(&app)");
+  expect(guard).toContain("if crate::url_router::handle_chooser_close(&window)");
   expect(guard).toContain("return;");
-  expect(guard).not.toContain("pending");
+  const bridge = router.slice(router.indexOf("pub(crate) fn handle_chooser_close"), router.indexOf("fn restore_dashboard"));
+  expect(bridge).toContain("pending.close_action(chooser_active(app))");
+  expect(bridge).toContain('"browser-chooser-close-requested"');
+  expect(bridge).toContain("id.to_string()");
+  expect(bridge).not.toContain(".url");
+  for (const source of [bridge, frontend]) {
+    expect(source).not.toContain("request_shutdown");
+    expect(source).not.toContain("app.exit");
+  }
+});
+
+test("native event subscription is narrowly authorized and awaited before presentation", () => {
+  expect(main).toContain('.permission("core:event:allow-listen")');
+  expect(main).toContain('.permission("core:event:allow-unlisten")');
+  expect(main).not.toContain('.permission("core:event:default")');
+  expect(main).not.toContain('.permission("core:event:allow-emit")');
+  expect(frontend).toContain('listen<string>("browser-chooser-close-requested"');
+  expect(frontend).toContain("if (!pending || !invoke || !closeReady) return;");
+  expect(frontend).toContain("pending?.id === id && current?.id === id");
+  expect(frontend).toContain("unlisten?.()");
+  expect(frontend).not.toContain("browser-chooser-close\"");
 });

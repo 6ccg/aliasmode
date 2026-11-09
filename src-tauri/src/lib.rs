@@ -514,6 +514,7 @@ pub fn run() {
             url_router::pending_browser_urls,
             url_router::present_browser_chooser,
             url_router::dismiss_browser_url,
+            url_router::finish_browser_chooser,
             url_router::installed_browsers,
             browser_order::browser_order,
             browser_order::save_browser_order,
@@ -676,7 +677,9 @@ pub fn run() {
                     .permission("allow-runtime-ready")
                     .permission("allow-script-capability")
                     .permission("allow-update-bridge")
-                    .permission("allow-url-router"),
+                    .permission("allow-url-router")
+                    .permission("core:event:allow-listen")
+                    .permission("core:event:allow-unlisten"),
             ) {
                 return Err(error.into());
             }

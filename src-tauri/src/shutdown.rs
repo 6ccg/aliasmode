@@ -172,9 +172,9 @@ pub fn install_close_handler(
     window.clone().on_window_event(move |event| {
         if let WindowEvent::CloseRequested { api, .. } = event {
             api.prevent_close();
-            // The compact URL chooser has explicit per-link dismissal controls.
-            // Cmd+W/titlebar Close must never stop active profile sessions here.
-            if crate::url_router::chooser_active(&app) {
+            // Route titlebar Close/Cmd+W through the chooser's guarded handshake.
+            // No chooser close request can enter profile/session cleanup.
+            if crate::url_router::handle_chooser_close(&window) {
                 return;
             }
             if state.in_progress.swap(true, Ordering::AcqRel) {

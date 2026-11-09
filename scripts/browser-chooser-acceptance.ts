@@ -29,27 +29,82 @@ Object.defineProperty(navigator, "platform", { value: "MacIntel" });
 const params = new URLSearchParams(location.search);
 const url = "https://one.google.com/ai-student?plans=1&utm_campaign=" + "tracking".repeat(100);
 const browsers = ["Safari", "Google Chrome", "Microsoft Edge", "Brave Browser", "Chromium"].map(name => ({name, path: "/Applications/" + name + ".app"}));
-const state = window.preview = { urls: params.has("duplicate") ? [url, url] : [url], calls: [], fetches: [], fail: false, delay: 0 };
-window.__TAURI_INTERNALS__ = { invoke: async (command, args) => {
+let nextId = 0;
+const link = value => ({id: String(++nextId), url: value});
+const state = window.preview = {
+  urls: (params.has("duplicate") ? [url, url] : [url]).map(link), calls: [], fetches: [],
+  fail: false, delay: 0, fetchDelay: 0, failDismiss: false, failRestore: false,
+  pollDelay: 0, pollsStarted: 0, finishDelay: 0, addDuringFinish: false, presented: false,
+  presentDelay: params.has("present-failure") ? 100 : 0, failPresent: params.has("present-failure"),
+  listenerDelay: params.has("listener-delay") ? 350 : 0,
+  listenerFailures: params.has("listener-failure") ? 1 : 0,
+  add: value => state.urls.push(link(value)),
+};
+const callbacks = new Map();
+const listeners = new Map();
+let callbackId = 0;
+window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: (_event, id) => listeners.delete(id) };
+state.nativeClose = (id = state.urls[0]?.id) => {
+  if (!id) return;
+  for (const [eventId, listener] of listeners) {
+    callbacks.get(listener.handler)?.({event: listener.event, id: eventId, payload: id});
+  }
+};
+window.__TAURI_INTERNALS__ = {
+  transformCallback: callback => { const id = ++callbackId; callbacks.set(id, callback); return id; },
+  invoke: async (command, args) => {
   state.calls.push({command, args});
-  if (command === "pending_browser_urls") return [...state.urls];
+  if (command === "plugin:event|listen") {
+    if (args.event !== "browser-chooser-close-requested" || args.target.label !== "main") throw new Error("Unexpected event subscription");
+    if (state.listenerDelay) await new Promise(resolve => setTimeout(resolve, state.listenerDelay));
+    if (state.listenerFailures > 0) { state.listenerFailures--; throw new Error("Native close listener unavailable"); }
+    listeners.set(args.handler, args);
+    return args.handler;
+  }
+  if (command === "plugin:event|unlisten") { listeners.delete(args.eventId); return; }
+  if (command === "pending_browser_urls") {
+    state.pollsStarted++;
+    const snapshot = state.urls.map(item => ({...item}));
+    if (state.pollDelay) await new Promise(resolve => setTimeout(resolve, state.pollDelay));
+    return snapshot;
+  }
   if (command === "installed_browsers") return browsers;
   if (command === "browser_order") return JSON.parse(localStorage.getItem("mock-native-order") || "[]");
   if (command === "save_browser_order") { localStorage.setItem("mock-native-order", JSON.stringify(args.order)); return; }
   if (command === "default_browser_status") return {isDefault: true};
-  if (command === "present_browser_chooser") return;
+  if (command === "present_browser_chooser") {
+    if (state.presentDelay) await new Promise(resolve => setTimeout(resolve, state.presentDelay));
+    if (state.failPresent) throw new Error("Could not show the compact browser chooser");
+    state.presented = true;
+    return;
+  }
+  if (command === "finish_browser_chooser") {
+    if (!state.urls.length && document.querySelector(".browser-chooser")) throw new Error("Chooser still mounted during restoration");
+    if (state.finishDelay) await new Promise(resolve => setTimeout(resolve, state.finishDelay));
+    if (state.addDuringFinish) { state.addDuringFinish = false; state.add("https://arrived.example/new"); }
+    if (!state.urls.length) {
+      if (state.failRestore) throw new Error("Could not restore the dashboard window");
+      state.presented = false;
+    }
+    return state.urls.map(item => ({...item}));
+  }
   if (command === "open_browser_url") {
     if (state.delay) await new Promise(resolve => setTimeout(resolve, state.delay));
     if (state.fail) throw new Error("Browser could not be opened");
     return;
   }
-  if (command === "dismiss_browser_url") { const index = state.urls.indexOf(args.url); if (index >= 0) state.urls.splice(index, 1); return; }
+  if (command === "dismiss_browser_url") {
+    if (state.failDismiss) throw new Error("Could not dismiss the link");
+    if (state.urls[0]?.id === args.id) state.urls.shift();
+    return state.urls.map(item => ({...item}));
+  }
   throw new Error("Unmocked native command: " + command);
 }};
 window.fetch = async (input, init) => {
   const path = String(input);
   if (path === "/ui/api/shell-language") return new Response(JSON.stringify({language: "en-US"}), {headers: {"Content-Type": "application/json"}});
   state.fetches.push({path, init});
+  if (state.fetchDelay) await new Promise(resolve => setTimeout(resolve, state.fetchDelay));
   if (!/^\\/ui\\/api\\/profiles\\/[^/]+\\/(open|open-url)$/.test(path)) throw new Error("Unmocked fetch: " + path);
   return new Response(JSON.stringify({ok: true}), {headers: {"Content-Type": "application/json"}});
 };
@@ -61,6 +116,10 @@ async function withinViewport(page: Page) {
   assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "Document horizontal overflow");
   const footer = await page.locator(".browser-chooser-footer").boundingBox();
   assert(footer && footer.y + footer.height <= 520.5, "Footer falls outside viewport");
+}
+async function dismissed(page: Page) {
+  await page.getByRole("dialog").waitFor({state: "hidden"});
+  await page.waitForFunction(() => !(window as any).preview.presented && !document.body.classList.contains("browser-chooser-active"));
 }
 async function focused(page: Page, selector: string) {
   assert(await page.evaluate(s => document.activeElement?.matches(s), selector), `Expected focus on ${selector}`);
@@ -105,21 +164,22 @@ try {
     assert.equal(await page.locator(".profile-routing-chip").nth(1).innerText(), "macOS");
     assert.equal(await page.locator(".profile-routing-flag").innerText(), "🇺🇸");
     assert.equal(await page.getByRole("img", {name: "Last checked proxy country: US"}).count(), 1);
-    await page.getByRole("button", {name: "Dismiss link", exact: true}).focus();
+    assert.equal(await page.locator(".browser-chooser-close").count(), 0, "Native titlebar close replaces the duplicate in-page ×");
+    await page.getByRole("button", {name: "Show full link", exact: true}).focus();
     await page.keyboard.press("Shift+Tab");
     await focused(page, ".browser-chooser-footer button");
     await page.keyboard.press("Tab");
-    await focused(page, ".browser-chooser-close");
+    await focused(page, ".browser-chooser-detail");
     await page.getByRole("button", {name: "Show full link"}).click();
     assert.equal(await page.getByRole("button", {name: "Hide full link"}).getAttribute("aria-expanded"), "true");
-    assert.equal(await page.locator("#browser-chooser-full-url").innerText(), await page.evaluate(() => (window as any).preview.urls[0]));
+    assert.equal(await page.locator("#browser-chooser-full-url").innerText(), await page.evaluate(() => (window as any).preview.urls[0].url));
     await page.getByRole("button", {name: "Hide full link"}).click();
     assert.equal(await page.locator("#browser-chooser-full-url").count(), 0);
     await page.getByRole("button", {name: "Show full link"}).click();
     await withinViewport(page);
     await snapshot("details-expanded");
     await page.keyboard.press("Escape");
-    await page.getByRole("dialog").waitFor({state: "hidden"});
+    await dismissed(page);
     assert.equal(await page.evaluate(() => (window as any).preview.calls.filter((c: any) => c.command === "dismiss_browser_url").length), 1);
 
     await visit("?duplicate");
@@ -128,8 +188,109 @@ try {
     assert.equal(await page.getByRole("dialog").count(), 1, "Escape should consume only one duplicate");
     await page.waitForFunction(() => document.querySelector('[role="status"]')?.textContent === "Choose once for this link");
     await page.keyboard.press("Escape");
-    await page.getByRole("dialog").waitFor({state: "hidden"});
+    await dismissed(page);
     assert.equal(await page.evaluate(() => (window as any).preview.urls.length), 0);
+
+    // Real Tauri event API plumbing drives the same dismissal path as native Close/Cmd+W.
+    await visit("?duplicate&long");
+    const firstId = await page.evaluate(() => (window as any).preview.urls[0].id);
+    await page.getByRole("button", {name: "Show full link"}).click();
+    await page.getByRole("textbox", {name: "Find a profile"}).fill("profile 49");
+    await page.evaluate(() => { const s = (window as any).preview; s.nativeClose(); s.nativeClose(); });
+    await page.waitForFunction(() => (window as any).preview.urls.length === 1);
+    await page.waitForFunction(() => document.querySelector('[role="status"]')?.textContent === "Choose once for this link");
+    assert.equal(await page.getByRole("button", {name: "Show full link"}).getAttribute("aria-expanded"), "false", "Duplicate URL receives fresh detail state");
+    assert.equal(await page.getByRole("textbox", {name: "Find a profile"}).inputValue(), "", "Duplicate URL receives fresh search state");
+    await page.evaluate(id => (window as any).preview.nativeClose(id), firstId);
+    assert.equal(await page.evaluate(() => (window as any).preview.urls.length), 1, "Late native event must not consume the next identical URL");
+    await page.evaluate(() => (window as any).preview.nativeClose());
+    await dismissed(page);
+    assert.equal(await page.evaluate(() => (window as any).preview.calls.filter((c: any) => c.command === "dismiss_browser_url").length), 2);
+    await page.evaluate(id => (window as any).preview.nativeClose(id), firstId);
+    assert.equal(await page.evaluate(() => (window as any).preview.calls.filter((c: any) => c.command === "dismiss_browser_url").length), 2, "Late close after restoration is ignored");
+    assert(await page.locator("#background").isVisible());
+
+    await visit("?duplicate");
+    await page.evaluate(() => { const s = (window as any).preview; s.fail = true; s.delay = 300; });
+    await page.locator(".browser-chooser-grid button").first().evaluate(el => {
+      (el as HTMLButtonElement).click();
+      (window as any).preview.nativeClose();
+    });
+    await page.keyboard.press("Escape");
+    await page.getByRole("alert").waitFor();
+    assert.equal(await page.evaluate(() => (window as any).preview.urls.length), 2, "Native close and Escape during a failed open must retain both requests");
+    assert.equal(await page.evaluate(() => (window as any).preview.calls.filter((c: any) => c.command === "dismiss_browser_url").length), 0);
+    await page.evaluate(() => { (window as any).preview.fail = false; });
+    await page.locator(".browser-chooser-grid button").first().click();
+    await page.evaluate(() => (window as any).preview.nativeClose());
+    await page.waitForFunction(() => (window as any).preview.urls.length === 1);
+    await page.waitForFunction(() => document.querySelector('[role="status"]')?.textContent === "Choose once for this link");
+    assert.equal(await page.evaluate(() => (window as any).preview.calls.filter((c: any) => c.command === "dismiss_browser_url").length), 1, "Successful open and concurrent native close consume one request");
+
+    await visit();
+    await page.evaluate(() => { (window as any).preview.fetchDelay = 250; });
+    await page.locator(".profile-choice").click();
+    await page.evaluate(() => (window as any).preview.nativeClose());
+    await page.keyboard.press("Escape");
+    assert.equal(await page.evaluate(() => (window as any).preview.urls.length), 1, "Opening a profile owns the link until it finishes");
+    await dismissed(page);
+    assert.deepEqual(await page.evaluate(() => (window as any).preview.fetches.map((f: any) => f.path)), ["/ui/api/profiles/0/open", "/ui/api/profiles/0/open-url"], "Closing the chooser never calls a session/profile shutdown endpoint");
+
+    // A delayed poll taken before dismissal must never resurrect the consumed URL.
+    await visit();
+    const startedPolls = await page.evaluate(() => { const s = (window as any).preview; s.pollDelay = 600; return s.pollsStarted; });
+    await page.waitForFunction(count => (window as any).preview.pollsStarted > count, startedPolls);
+    await page.evaluate(() => (window as any).preview.nativeClose());
+    await dismissed(page);
+    await page.waitForTimeout(750);
+    assert.equal(await page.getByRole("dialog").count(), 0);
+    assert.equal(await page.evaluate(() => (window as any).preview.urls.length), 0);
+
+    await visit();
+    await page.evaluate(() => { (window as any).preview.failDismiss = true; (window as any).preview.nativeClose(); });
+    await page.getByRole("alert").waitFor();
+    assert.equal(await page.evaluate(() => (window as any).preview.urls.length), 1);
+    await page.evaluate(() => { (window as any).preview.failDismiss = false; (window as any).preview.nativeClose(); });
+    await dismissed(page);
+
+    await visit();
+    await page.evaluate(() => { (window as any).preview.failRestore = true; (window as any).preview.nativeClose(); });
+    await page.getByRole("alert").waitFor();
+    assert.match(await page.getByRole("alert").innerText(), /Could not restore/);
+    assert.equal(await page.locator(".browser-chooser-link").count(), 0, "Link UI is removed before restoration");
+    assert.equal(await page.evaluate(() => (window as any).preview.presented), true, "Restore failure retains native close protection");
+    await page.evaluate(() => { (window as any).preview.failRestore = false; });
+    await page.getByRole("button", {name: "Retry", exact: true}).click();
+    await dismissed(page);
+    assert.equal(await page.evaluate(() => (window as any).preview.calls.filter((c: any) => c.command === "dismiss_browser_url").length), 1, "Restore retry cannot consume another link");
+
+    await visit();
+    await page.evaluate(() => { const s = (window as any).preview; s.finishDelay = 150; s.addDuringFinish = true; s.nativeClose(); });
+    await page.waitForFunction(() => document.querySelector(".browser-chooser-summary")?.textContent?.includes("arrived.example/new"));
+    assert.equal(await page.evaluate(() => (window as any).preview.presented), true, "New URL during finish keeps the compact presentation");
+    await page.evaluate(() => (window as any).preview.nativeClose());
+    await dismissed(page);
+
+    await visit("?present-failure");
+    await page.evaluate(() => { const s = (window as any).preview; s.finishDelay = 300; s.nativeClose(); });
+    await page.waitForTimeout(150);
+    assert.equal(await page.locator(".browser-chooser").count(), 0, "Late presentation failure must not resurrect a chooser during finish");
+    await dismissed(page);
+
+    await page.goto(server!.url.href + "?listener-delay");
+    await page.getByRole("dialog").waitFor();
+    assert.equal(await page.evaluate(() => (window as any).preview.calls.some((c: any) => c.command === "present_browser_chooser")), false, "Do not show native chooser before close listener is ready");
+    await page.waitForFunction(() => (window as any).preview.presented);
+    await page.evaluate(() => (window as any).preview.nativeClose());
+    await dismissed(page);
+
+    await page.goto(server!.url.href + "?listener-failure");
+    await page.getByRole("alert").waitFor();
+    assert.match(await page.getByRole("alert").innerText(), /Native close listener unavailable/);
+    assert.equal(await page.evaluate(() => (window as any).preview.presented), false);
+    await page.waitForFunction(() => (window as any).preview.presented);
+    await page.evaluate(() => (window as any).preview.nativeClose());
+    await dismissed(page);
 
     await visit();
     await page.evaluate(() => { (window as any).preview.fail = true; (window as any).preview.delay = 150; });
@@ -143,7 +304,7 @@ try {
     await snapshot("open-error");
     await page.evaluate(() => { (window as any).preview.fail = false; });
     await page.locator(".browser-chooser-grid button").first().click();
-    await page.getByRole("dialog").waitFor({state: "hidden"});
+    await dismissed(page);
 
     await visit("?long");
     assert.equal(await page.locator(".profile-choice").count(), 50);
@@ -155,7 +316,7 @@ try {
     await page.getByRole("textbox", {name: "Find a profile"}).fill("profile 49");
     assert.equal(await page.locator(".profile-choice").count(), 1);
     await page.locator(".profile-choice").click();
-    await page.getByRole("dialog").waitFor({state: "hidden"});
+    await dismissed(page);
     assert.deepEqual(await page.evaluate(() => (window as any).preview.fetches.map((f: any) => f.path)), ["/ui/api/profiles/49/open", "/ui/api/profiles/49/open-url"]);
 
     await visit("?settings");

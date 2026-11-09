@@ -1749,7 +1749,6 @@ body.browser-chooser-active #root { visibility: hidden; }
 .browser-chooser-header { display: flex; align-items: center; justify-content: space-between; padding: 20px 20px 14px; gap: 12px; }
 .browser-chooser-brand { font-size: 9px; font-weight: 700; letter-spacing: 1.7px; color: var(--muted, #797d89); }
 .browser-chooser h2 { font-size: 20px; line-height: 1.3; font-weight: 650; margin: 5px 0 0; }
-.browser-chooser-close { flex: none; width: 30px; height: 30px; border: 0; border-radius: 50%; background: var(--bg, #f3f4f7); color: inherit; font-size: 22px; cursor: pointer; }
 .browser-chooser-link { margin: 0 20px; padding: 10px 12px; border-radius: 10px; background: var(--bg, #f5f6f8); font-size: 12px; min-width: 0; }
 .browser-chooser-summary { display: flex; gap: 8px; align-items: center; cursor: pointer; list-style: none; }
 .browser-chooser-summary::-webkit-details-marker { display: none; }
@@ -1786,8 +1785,7 @@ body.browser-chooser-active #root { visibility: hidden; }
 .browser-chooser-brand { letter-spacing: .2px; font-size: 12px; }
 .browser-chooser h2 { margin-top: 8px; font-size: 22px; }
 .browser-chooser { background: linear-gradient(145deg, var(--surface), var(--surface-sunken)); }
-.browser-chooser-header { position: relative; }
-.browser-chooser-close { position: absolute; left: 16px; top: 16px; }
+.browser-chooser-restoring { padding: 20px; }
 .browser-chooser-backdrop { background: var(--surface-sunken); }
 
 .profile-routing-info { display: inline-flex; align-items: center; gap: 4px; flex: none; min-width: 0; }

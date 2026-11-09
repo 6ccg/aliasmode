@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from "react";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { profileRoutingInfo } from "./profile-routing-info.ts";
 import { useTranslation } from "./i18n.tsx";
 import { openProfile, type UiProfile } from "./api.ts";
 
+type PendingBrowserUrl = { id: string; url: string };
 export type Browser = { name: string; path: string; icon?: string | null };
 type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 const key = "aliasmode-added-browsers";
@@ -38,7 +40,14 @@ export function UrlRouter({ profiles, local }: { profiles: UiProfile[]; local: b
   const { t } = useTranslation();
   const invoke = (window as any).__TAURI_INTERNALS__?.invoke as Invoke | undefined;
   const supported = !!invoke && /Mac/.test(navigator.platform);
-  const [urls, setUrls] = useState<string[]>([]);
+  const [urls, setUrls] = useState<PendingBrowserUrl[]>([]);
+  const queue = useRef<PendingBrowserUrl[]>([]);
+  const [restoring, setRestoring] = useState(false);
+  const [restoreAttempt, setRestoreAttempt] = useState(0);
+  const finishing = useRef(false);
+  const nativeClose = useRef<(id: string) => void>(() => {});
+  const [closeReady, setCloseReady] = useState(false);
+  const [closeError, setCloseError] = useState("");
   const [browsers, setBrowsers] = useState<Browser[]>([]);
   const [added, setAdded] = useState<Browser[]>([]);
   const [order, setOrder] = useState<string[]>(readBrowserOrder);
@@ -49,16 +58,39 @@ export function UrlRouter({ profiles, local }: { profiles: UiProfile[]; local: b
   const [busy, setBusy] = useState(false);
   const operationBusy = useRef(false);
   const queueVersion = useRef(0);
+  const updateQueue = (pending: PendingBrowserUrl[]) => {
+    const next = pending.filter(item => typeof item.id === "string" && isRoutableUrl(item.url));
+    queue.current = next;
+    setUrls(next);
+    if (next.length) setRestoring(false);
+  };
   useEffect(() => {
     if (!supported || !invoke) return;
     let active = true;
     let polling = false;
+    let unlisten: UnlistenFn | undefined;
+    let listenerRetry: ReturnType<typeof setTimeout> | undefined;
+    // Do not present the compact window until Close can reach the frontend.
+    // Registration failures are visible and retry without consuming any link.
+    const registerClose = () => {
+      void listen<string>("browser-chooser-close-requested", event => {
+        if (active) nativeClose.current(event.payload);
+      }, { target: "main" }).then(dispose => {
+        if (active) { unlisten = dispose; setCloseReady(true); setCloseError(""); }
+        else dispose();
+      }).catch(error => {
+        if (active) { setCloseError(String(error)); listenerRetry = setTimeout(registerClose, 1000); }
+      });
+    };
+    registerClose();
     const poll = async () => {
-      if (polling) return;
+      if (polling || operationBusy.current || finishing.current) return;
       polling = true;
       const version = queueVersion.current;
-      try { const pending = await invoke<string[]>("pending_browser_urls"); if (active && version === queueVersion.current) setUrls(pending.filter(isRoutableUrl)); }
-      catch { /* The sidecar may still be starting. Retain the native queue. */ }
+      try {
+        const pending = await invoke<PendingBrowserUrl[]>("pending_browser_urls");
+        if (active && version === queueVersion.current && !operationBusy.current && !finishing.current) updateQueue(pending);
+      } catch { /* The sidecar may still be starting. Retain the native queue. */ }
       finally { polling = false; }
     };
     void invoke<Browser[]>("installed_browsers").then(value => { if (active) setBrowsers(value); }).catch(() => {});
@@ -72,36 +104,76 @@ export function UrlRouter({ profiles, local }: { profiles: UiProfile[]; local: b
     window.addEventListener("storage", refreshAdded);
     void poll();
     const timer = setInterval(() => void poll(), 1000);
-    return () => { active = false; clearInterval(timer); window.removeEventListener("aliasmode-browsers-changed", refreshAdded); window.removeEventListener("storage", refreshAdded); };
+    return () => { active = false; unlisten?.(); clearTimeout(listenerRetry); clearInterval(timer); window.removeEventListener("aliasmode-browsers-changed", refreshAdded); window.removeEventListener("storage", refreshAdded); };
   }, [supported, invoke]);
-  const url = urls[0];
+  const pending = urls[0];
+  const url = pending?.url;
+  const chooserVisible = !!pending || restoring;
   useEffect(() => {
-    if (!url || !invoke) return;
-    setFilter("");
-    setShowFullUrl(false);
+    if (!chooserVisible) return;
     document.body.classList.add("browser-chooser-active");
     const previous = document.activeElement as HTMLElement | null;
-    dialog.current?.focus();
-    const frame = requestAnimationFrame(() => {
-      void invoke("present_browser_chooser").catch(error => setError(String(error)));
-    });
     return () => {
-      cancelAnimationFrame(frame);
       document.body.classList.remove("browser-chooser-active");
       previous?.focus();
     };
-  }, [url, invoke]);
-  if (!supported || !invoke) return null;
-  const dismiss = async () => {
-    if (url) { await invoke("dismiss_browser_url", { url }); queueVersion.current++; setUrls(items => items[0] === url ? items.slice(1) : items); }
+  }, [chooserVisible]);
+  useEffect(() => {
+    if (!pending || !invoke || !closeReady) return;
+    setFilter("");
+    setShowFullUrl(false);
+    dialog.current?.focus();
+    let active = true;
+    const frame = requestAnimationFrame(() => {
+      void invoke("present_browser_chooser").catch(error => {
+        if (active && queue.current[0]?.id === pending.id) setError(String(error));
+      });
+    });
+    return () => { active = false; cancelAnimationFrame(frame); };
+  }, [pending?.id, invoke, closeReady]);
+  useEffect(() => {
+    if (!supported || !invoke || pending || busy) return;
+    // React has removed the entire chooser before native restoration is allowed.
+    // Also recovers a reload that occurred between dismissal and this acknowledgement.
+    let active = true;
+    finishing.current = true;
+    queueVersion.current++;
+    void invoke<PendingBrowserUrl[]>("finish_browser_chooser").then(next => {
+      if (!active) return;
+      updateQueue(next);
+      setRestoring(false);
+      setError("");
+    }).catch(error => {
+      if (active) { setRestoring(true); setError(String(error)); }
+    }).finally(() => {
+      if (active) { finishing.current = false; queueVersion.current++; }
+    });
+    return () => { active = false; finishing.current = false; queueVersion.current++; };
+  }, [supported, invoke, pending?.id, busy, restoreAttempt]);
+  const dismiss = async (item: PendingBrowserUrl) => {
+    if (!invoke) return;
+    const next = await invoke<PendingBrowserUrl[]>("dismiss_browser_url", { id: item.id });
+    queueVersion.current++;
+    updateQueue(next);
+    if (!next.length) setRestoring(true);
     setError("");
   };
   const run = async (action: () => Promise<unknown>) => {
-    if (operationBusy.current) return;
+    if (operationBusy.current || finishing.current || !pending || queue.current[0]?.id !== pending.id) return;
     operationBusy.current = true;
+    queueVersion.current++;
     setBusy(true); setError("");
-    try { await action(); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { operationBusy.current = false; setBusy(false); }
+    try { await action(); } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    finally { queueVersion.current++; operationBusy.current = false; setBusy(false); }
   };
+  const dismissCurrent = () => {
+    if (pending && queue.current[0]?.id === pending.id) void run(() => dismiss(pending));
+  };
+  nativeClose.current = id => {
+    const current = queue.current[0];
+    if (pending?.id === id && current?.id === id) void run(() => dismiss(current));
+  };
+  if (!supported || !invoke) return null;
   const selectProfile = (id: string) => run(async () => {
     const opened = await openProfile(id);
     if (opened?.ok === false) throw new Error(opened.error || "Profile could not be opened");
@@ -110,15 +182,23 @@ export function UrlRouter({ profiles, local }: { profiles: UiProfile[]; local: b
     });
     const result = await response.json();
     if (!response.ok || !result.ok) throw new Error(result.error || "Link could not be opened");
-    await dismiss();
+    if (pending) await dismiss(pending);
   });
-  if (!url) return null;
+  if (!pending || !url) return restoring && error ? <div className="browser-chooser-backdrop">
+    <section className="browser-chooser browser-chooser-restoring" role="dialog" aria-modal="true" aria-label={t("Open link with…")}>
+      <p role="alert">{error}</p>
+      <button type="button" autoFocus onKeyDown={event => {
+        if (event.key === "Tab") event.preventDefault();
+        if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); }
+      }} onClick={() => { setError(""); setRestoreAttempt(value => value + 1); }}>{t("Retry")}</button>
+    </section>
+  </div> : null;
   const choices = orderedBrowsers(browsers, added, order);
   const visibleProfiles = profiles.filter(profile => (profile.name || profile.id).toLowerCase().includes(filter.toLowerCase()));
   return <div className="browser-chooser-backdrop">
     <section ref={dialog} className="browser-chooser" role="dialog" aria-modal="true" aria-labelledby="browser-chooser-title" tabIndex={-1}
       onKeyDown={event => {
-        if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); if (!busy) void run(dismiss); }
+        if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); if (!event.repeat) dismissCurrent(); }
         if (event.key === "Tab") {
           const nodes = [...event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), summary, [tabindex="0"]')];
           const first = nodes[0], last = nodes[nodes.length - 1];
@@ -129,7 +209,6 @@ export function UrlRouter({ profiles, local }: { profiles: UiProfile[]; local: b
       }}>
       <header className="browser-chooser-header">
         <div><span className="browser-chooser-brand">ALIASMODE</span><h2 id="browser-chooser-title">{t("Open link with…")}</h2></div>
-        <button type="button" className="browser-chooser-close" aria-label={t("Dismiss link")} disabled={busy} onClick={() => void run(dismiss)}>×</button>
       </header>
       <div className="browser-chooser-link">
         <div className="browser-chooser-summary"><span aria-hidden="true">↗</span><span title={linkSummary(url)}>{linkSummary(url)}</span>
@@ -141,7 +220,7 @@ export function UrlRouter({ profiles, local }: { profiles: UiProfile[]; local: b
         <h3>{t("Browsers")}</h3>
         <div className="browser-chooser-grid">
           {choices.map(browser => <button type="button" className="browser-choice" key={browser.path} title={browser.path} disabled={busy}
-            onClick={() => void run(async () => { await invoke("open_browser_url", { path: browser.path, url }); await dismiss(); })}>
+            onClick={() => void run(async () => { await invoke("open_browser_url", { path: browser.path, url }); await dismiss(pending); })}>
             <span className="browser-choice-icon" aria-hidden="true">{browser.icon?.startsWith("data:image/png;base64,") ? <img src={browser.icon} alt="" /> : browser.name.slice(0, 1)}</span><span>{browser.name}</span><span className="browser-choice-arrow" aria-hidden="true">↗</span>
           </button>)}
         </div>
@@ -166,10 +245,10 @@ export function UrlRouter({ profiles, local }: { profiles: UiProfile[]; local: b
           {!!profiles.length && !visibleProfiles.length && <p className="browser-chooser-note">{t("No matching profiles.")}</p>}
         </> : <p className="browser-chooser-note">{t("Switch to Local in the main window to use local profiles.")}</p>}
       </div>
-      {error && <p className="browser-chooser-error" role="alert">{error}</p>}
+      {(error || closeError) && <p className="browser-chooser-error" role="alert">{error || closeError}</p>}
       <footer className="browser-chooser-footer">
         <span role="status">{busy ? t("Opening…") : urls.length > 1 ? t("{count} links waiting", {count: urls.length}) : t("Choose once for this link")}</span>
-        <button type="button" disabled={busy} onClick={() => void run(dismiss)}>{t("Dismiss")} <kbd>Esc</kbd></button>
+        <button type="button" disabled={busy} onClick={dismissCurrent}>{t("Dismiss")} <kbd>Esc</kbd></button>
       </footer>
     </section>
   </div>;

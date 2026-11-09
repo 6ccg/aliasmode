@@ -52,8 +52,8 @@ test("macOS shell registers web schemes and keeps a native queue until explicit 
   const source = await Bun.file("src-tauri/src/lib.rs").text();
   expect(source).toContain("tauri::RunEvent::Opened { urls }");
   const router = await Bun.file("src-tauri/src/url_router.rs").text();
-  expect(router).toContain(".clone())");
-  expect(router).toContain("pending.remove(index)");
+  expect(router).toContain("Ok(pending_urls(&pending))");
+  expect(router).toContain("pending.dismiss(id)");
   expect(router).toContain('arg("-a")');
   expect(router).toContain('arg("--")');
 });

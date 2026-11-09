@@ -2,10 +2,32 @@
 use crate::credentials::{authorize, CredentialOrigin};
 use serde::Serialize;
 use std::sync::Mutex;
-use tauri::{LogicalSize, Manager, PhysicalPosition, PhysicalSize, State, WebviewWindow};
+use tauri::{Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, State, WebviewWindow};
+
+#[path = "url_inbox.rs"]
+mod inbox;
+use inbox::{CloseAction, UrlQueue};
 
 #[derive(Default)]
-pub struct UrlInbox(pub Mutex<Vec<String>>);
+pub struct UrlInbox(Mutex<UrlQueue>);
+
+#[derive(Clone, Serialize)]
+pub struct PendingBrowserUrl {
+    // A string keeps IPC identities exact even beyond JavaScript's integer range.
+    id: String,
+    url: String,
+}
+
+fn pending_urls(inbox: &UrlQueue) -> Vec<PendingBrowserUrl> {
+    inbox
+        .pending()
+        .iter()
+        .map(|item| PendingBrowserUrl {
+            id: item.id.to_string(),
+            url: item.url.clone(),
+        })
+        .collect()
+}
 
 /// Temporary presentation only: never persist chooser dimensions as dashboard geometry.
 #[derive(Default)]
@@ -86,7 +108,31 @@ pub(crate) fn chooser_active(app: &tauri::AppHandle) -> bool {
         .0
         .lock()
         .map(|state| state.is_some())
-        .unwrap_or(false)
+        .unwrap_or(true)
+}
+
+/// Native Close/Cmd+W requests a single frontend dismissal. It never shuts down
+/// the sidecar, including before first render and during final restoration.
+pub(crate) fn handle_chooser_close(window: &WebviewWindow) -> bool {
+    let app = window.app_handle();
+    let inbox = app.state::<UrlInbox>();
+    let Ok(pending) = inbox.0.lock() else {
+        return true;
+    };
+    match pending.close_action(chooser_active(app)) {
+        CloseAction::CloseDashboard => false,
+        CloseAction::WaitForFrontend => true,
+        CloseAction::Dismiss(id) => {
+            // Only the request identity crosses the event bridge, never the URL.
+            // An unavailable frontend leaves the inbox untouched, safely retryable.
+            let _ = window.emit_to(
+                window.label(),
+                "browser-chooser-close-requested",
+                id.to_string(),
+            );
+            true
+        }
+    }
 }
 
 fn restore_dashboard(window: &WebviewWindow) -> Result<(), String> {
@@ -143,7 +189,7 @@ pub fn present_browser_chooser(
         window.set_min_size(Some(LogicalSize::new(width.min(320.0), height.min(300.0))))?;
         window.set_size(LogicalSize::new(width, height))?;
         window.set_resizable(false)?;
-        window.set_closable(false)?;
+        window.set_closable(true)?;
         window.center()?;
         window.unminimize()?;
         window.show()?;
@@ -151,7 +197,10 @@ pub fn present_browser_chooser(
         Ok(())
     })();
     if result.is_err() {
-        let _ = snapshot.restore(&window);
+        // Retain the guard and snapshot if recovery fails, so Close cannot exit.
+        if snapshot.restore(&window).is_err() {
+            *state = Some(snapshot);
+        }
         return Err("Could not show the compact browser chooser".into());
     }
     *state = Some(snapshot);
@@ -173,9 +222,8 @@ pub fn receive(app: &tauri::AppHandle, urls: impl IntoIterator<Item = String>) {
     let mut received = false;
     if let Ok(mut pending) = inbox.0.lock() {
         for url in urls {
-            if web_url(&url) && pending.len() < 100 {
-                pending.push(url);
-                received = true;
+            if web_url(&url) {
+                received |= pending.push(url);
             }
         }
     }
@@ -198,9 +246,10 @@ pub fn pending_browser_urls(
     window: WebviewWindow,
     origin: State<'_, CredentialOrigin>,
     inbox: State<'_, UrlInbox>,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<PendingBrowserUrl>, String> {
     authorize(&window, &origin)?;
-    Ok(inbox.0.lock().map_err(|_| "URL inbox unavailable")?.clone())
+    let pending = inbox.0.lock().map_err(|_| "URL inbox unavailable")?;
+    Ok(pending_urls(&pending))
 }
 
 #[tauri::command]
@@ -208,17 +257,32 @@ pub fn dismiss_browser_url(
     window: WebviewWindow,
     origin: State<'_, CredentialOrigin>,
     inbox: State<'_, UrlInbox>,
-    url: String,
-) -> Result<(), String> {
+    id: String,
+) -> Result<Vec<PendingBrowserUrl>, String> {
+    authorize(&window, &origin)?;
+    let id = id.parse::<u64>().map_err(|_| "Invalid link request")?;
+    let mut pending = inbox.0.lock().map_err(|_| "URL inbox unavailable")?;
+    pending.dismiss(id);
+    // Keep the presentation guard until the frontend has removed the link UI.
+    Ok(pending_urls(&pending))
+}
+
+/// Second phase: the frontend has committed its empty-queue view. Holding the
+/// inbox lock makes new-link arrival atomic with restoration. A failed restore
+/// retains the snapshot and close guard, and can be retried without losing URLs.
+#[tauri::command]
+pub fn finish_browser_chooser(
+    window: WebviewWindow,
+    origin: State<'_, CredentialOrigin>,
+    inbox: State<'_, UrlInbox>,
+) -> Result<Vec<PendingBrowserUrl>, String> {
     authorize(&window, &origin)?;
     let mut pending = inbox.0.lock().map_err(|_| "URL inbox unavailable")?;
-    if let Some(index) = pending.iter().position(|item| item == &url) {
-        pending.remove(index);
-    }
     if pending.is_empty() {
         restore_dashboard(&window)?;
+        pending.finish();
     }
-    Ok(())
+    Ok(pending_urls(&pending))
 }
 
 #[derive(Serialize)]
