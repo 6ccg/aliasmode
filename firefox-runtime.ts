@@ -38,6 +38,8 @@ export interface StartFirefoxOwnerInput {
   prefs?: Record<string, JsonValue>;
   proxy?: { server: string; username?: string; password?: string; bypass?: string };
   headless?: boolean;
+  /** Native macOS Dock number; applied once when this browser starts. */
+  dockBadge?: string;
   args?: string[];
   timeoutMs?: number;
 }

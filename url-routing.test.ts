@@ -16,6 +16,21 @@ function setup() {
   }), launcher, store, remote, options);
   return { store, opened, request, launcher };
 }
+test("chooser reads local display data without waiting for browser process reconciliation", async () => {
+  const { store, launcher } = setup();
+  launcher.reconcileOrphans = () => { throw Error("Chooser must not scan processes"); };
+  launcher.browserIconPaths = () => ({ firefox: "/runtime/Firefox.app" });
+  try {
+    const request = () => new Request("http://localhost/ui/api/browser-chooser");
+    const response = await handleUiRequest(request(), launcher, store, null, {});
+    const data = await response!.json();
+    expect(data.local).toBe(true);
+    expect(data.profiles.map((item: any) => item.id)).toEqual(["route1"]);
+    expect(data.iconPaths.firefox).toBe("/runtime/Firefox.app");
+    const cloud = await handleUiRequest(request(), launcher, store, null, { runtimeMode: "cloud" });
+    expect(await cloud!.json()).toEqual({ local: false, profiles: [], iconPaths: {} });
+  } finally { store.close(); }
+});
 test("URL routing opens a new tab through the certified runtime without changing profile settings", async () => {
   const { store, opened, request } = setup();
   try {
@@ -45,15 +60,4 @@ test("URL routing rejects cloud, remote, and inactive runtimes", async () => {
     expect((await request("https://example.com"))!.status).toBe(409);
     expect(opened).toHaveLength(0);
   } finally { store.close(); }
-});
-test("macOS shell registers web schemes and keeps a native queue until explicit dismissal", async () => {
-  const plist = await Bun.file("src-tauri/Info.plist").text();
-  expect(plist).toContain("<string>http</string><string>https</string>");
-  const source = await Bun.file("src-tauri/src/lib.rs").text();
-  expect(source).toContain("tauri::RunEvent::Opened { urls }");
-  const router = await Bun.file("src-tauri/src/url_router.rs").text();
-  expect(router).toContain("Ok(pending_urls(&pending))");
-  expect(router).toContain("pending.dismiss(id)");
-  expect(router).toContain('arg("-a")');
-  expect(router).toContain('arg("--")');
 });

@@ -1,5 +1,8 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createReadStream } from "node:fs";
+import { readFile, rm } from "node:fs/promises";
+import { createConnection } from "node:net";
+import { setTimeout as delay } from "node:timers/promises";
 import { createServer } from "node:http";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -79,6 +82,68 @@ function asciiJson(value) {
 export function camouEnvironment(config, prefs) {
   setChunkedEnv("CAMOU_CONFIG", asciiJson(config));
   setChunkedEnv("CAMOU_PREFS", prefs && Object.keys(prefs).length ? asciiJson(prefs) : "");
+}
+
+function wantsDockBadge(input) {
+  return process.platform === "darwin" && !input.headless && /^\d{1,16}$/.test(input.dockBadge ?? "");
+}
+
+/** Firefox's built-in native API, reached over a short-lived Marionette connection. */
+export async function applyFirefoxDockBadge(directory, label) {
+  if (!/^\d{1,16}$/.test(label)) return false;
+  const deadline = Date.now() + 3000;
+  let port;
+  while (Date.now() < deadline) {
+    try { port = Number(await readFile(join(directory, "MarionetteActivePort"), "utf8")); } catch {}
+    if (Number.isInteger(port) && port > 0 && port <= 65535) break;
+    await delay(50);
+  }
+  if (!port || Date.now() >= deadline) throw Error("Firefox native bridge unavailable");
+  const socket = createConnection({ host: "127.0.0.1", port });
+  let bytes = Buffer.alloc(0), messages = [], waiter, failure;
+  const fail = error => { failure = error; waiter?.reject(error); waiter = undefined; };
+  const timer = setTimeout(() => { fail(Error("Firefox Dock badge timed out")); socket.destroy(); }, Math.max(1, deadline - Date.now()));
+  socket.on("error", fail);
+  socket.on("close", () => fail(Error("Firefox native bridge closed")));
+  socket.on("data", chunk => {
+    bytes = Buffer.concat([bytes, chunk]);
+    try {
+      while (bytes.length) {
+        const colon = bytes.indexOf(58);
+        if (colon < 0) { if (bytes.length > 10) throw Error("Invalid native frame"); break; }
+        const length = Number(bytes.subarray(0, colon));
+        if (!Number.isInteger(length) || length < 1 || length > 1024 * 1024) throw Error("Invalid native frame");
+        if (bytes.length < colon + 1 + length) break;
+        const message = JSON.parse(bytes.subarray(colon + 1, colon + 1 + length));
+        bytes = bytes.subarray(colon + 1 + length);
+        if (waiter) { const next = waiter; waiter = undefined; next.resolve(message); }
+        else messages.push(message);
+      }
+    } catch (error) { fail(error); socket.destroy(); }
+  });
+  const next = () => failure ? Promise.reject(failure) : messages.length ? Promise.resolve(messages.shift()) : new Promise((resolve, reject) => { waiter = { resolve, reject }; });
+  let id = 0;
+  const call = async (command, parameters = {}) => {
+    const body = JSON.stringify([0, ++id, command, parameters]);
+    socket.write(`${Buffer.byteLength(body)}:${body}`);
+    const reply = await next();
+    if (!Array.isArray(reply) || reply[0] !== 1 || reply[1] !== id || reply[2]) throw Error("Firefox native command failed");
+    return reply[3];
+  };
+  try {
+    const hello = await next();
+    if (hello.applicationType !== "gecko" || hello.marionetteProtocol !== 3) throw Error("Unsupported native protocol");
+    await call("WebDriver:NewSession", { capabilities: { alwaysMatch: {} } });
+    await call("Marionette:SetContext", { value: "chrome" });
+    const result = await call("WebDriver:ExecuteScript", {
+      script: `if (!("@mozilla.org/widget/macdocksupport;1" in Cc)) return false;
+        const dock = Cc["@mozilla.org/widget/macdocksupport;1"].getService(Ci.nsIMacDockSupport);
+        dock.badgeText = arguments[0]; return dock.badgeText === arguments[0];`,
+      args: [label], newSandbox: true, sandbox: "default",
+    });
+    await call("WebDriver:DeleteSession");
+    return result?.value === true;
+  } finally { clearTimeout(timer); socket.destroy(); }
 }
 
 async function readConfig() {
@@ -201,6 +266,12 @@ export function firefoxLaunchOptions(input) {
     }),
     ...(input.headless === undefined ? {} : { headless: input.headless }),
     ...(input.args ? { args: input.args } : {}),
+    ...(wantsDockBadge(input) ? {
+      args: [...(input.args ?? []), "--marionette", "--remote-allow-system-access"],
+      // Port zero is assigned by Firefox; its own active-port file avoids allocation races
+      // and stale port preferences when reopening an existing Profile.
+      env: { ...process.env, MOZ_REMOTE_ALLOW_SYSTEM_ACCESS: "1", MOZ_MARIONETTE_PREF_STATE_ACROSS_RESTARTS: '{"marionette.port":0}' },
+    } : {}),
   };
 }
 
@@ -220,13 +291,19 @@ export function trackFirefoxPages(context) {
 
 async function launchOwner(input) {
   if (await sha256File(input.executablePath) !== input.executableSha256) throw typed("operation_failed");
-  camouEnvironment(input.config, input.prefs);
+  const badge = wantsDockBadge(input);
+  if (badge) await rm(join(input.userDataDir, "MarionetteActivePort"), { force: true });
+  camouEnvironment(input.config, { ...input.prefs, ...(badge ? { "remote.prefs.recommended": false } : {}) });
   process.env.ALIASMODE_FIREFOX_SESSION_GENERATION = input.sessionGeneration ?? input.owner.generation;
   let runtime;
   try { runtime = await import(pathToFileURL(join(ROOT, "node_modules", "playwright-core", "index.mjs")).href); } catch { throw typed("runtime_unavailable"); }
   if (!runtime.firefox) throw typed("runtime_unavailable");
   try {
-    return await runtime.firefox.launchPersistentContext(input.userDataDir, firefoxLaunchOptions(input));
+    const context = await runtime.firefox.launchPersistentContext(input.userDataDir, firefoxLaunchOptions(input));
+    if (badge) void applyFirefoxDockBadge(input.userDataDir, input.dockBadge).catch(() => {
+      process.stderr.write("Firefox Dock badge unavailable; browser launch is unaffected\n");
+    });
+    return context;
   } catch {
     throw typed("operation_failed");
   }

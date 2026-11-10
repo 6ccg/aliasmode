@@ -826,6 +826,21 @@ export async function handleUiRequest(
     }
   }
 
+  if (pathname === "/ui/api/browser-chooser" && req.method === "GET") {
+    const mode = options.runtimeMode ?? options.appConfig?.read().mode ?? "local";
+    const local = mode === "local" && !remote && !options.cloudBrowser;
+    const meta = local ? store.listProfileMeta() : new Map();
+    return noStoreJson({
+      local,
+      profiles: local ? store.listProfiles().map(p => ({
+        id: p.id, name: p.name, engine: profileEngine(p), chromiumRuntime: p.chromiumRuntime,
+        fingerprintOs: configuredFingerprintOs(p), proxyCountryCode: knownProxyCountry(store, p.proxy),
+        customNo: p.customNo ?? "", serial: meta.get(p.id)?.serial ?? null,
+      })) : [],
+      iconPaths: local ? launcher.browserIconPaths() : {},
+    });
+  }
+
   if (pathname === "/ui/api/app-mode" && req.method === "GET") {
     const config = options.appConfig?.read() ?? { version: 1 as const, mode: "local" as const, localAnalytics: false };
     return Response.json({

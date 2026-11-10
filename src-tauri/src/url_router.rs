@@ -1,15 +1,37 @@
 //! Local-only URL inbox. Never log links: they may contain authentication tokens.
 use crate::credentials::{authorize, CredentialOrigin};
 use serde::Serialize;
-use std::sync::Mutex;
-use tauri::{Emitter, LogicalSize, Manager, PhysicalPosition, PhysicalSize, State, WebviewWindow};
+use std::{
+    collections::HashMap,
+    sync::{Mutex, OnceLock},
+    time::{Duration, Instant, SystemTime},
+};
+use tauri::{Emitter, Manager, State, WebviewWindow};
+#[cfg(any(target_os = "macos", windows))]
+use tauri::{LogicalSize, PhysicalPosition, WebviewUrl, WebviewWindowBuilder};
+
+#[cfg(windows)]
+#[path = "url_router_windows.rs"]
+mod windows;
 
 #[path = "url_inbox.rs"]
 mod inbox;
-use inbox::{CloseAction, UrlQueue};
+#[cfg(any(target_os = "macos", windows))]
+use inbox::LaunchVisibility;
+use inbox::UrlQueue;
 
 #[derive(Default)]
 pub struct UrlInbox(Mutex<UrlQueue>);
+
+#[derive(Default)]
+#[cfg(any(target_os = "macos", windows))]
+pub struct DesktopLaunch(pub Mutex<LaunchVisibility>);
+
+#[derive(Serialize)]
+pub struct PendingBrowserUrls {
+    revision: String,
+    urls: Vec<PendingBrowserUrl>,
+}
 
 #[derive(Clone, Serialize)]
 pub struct PendingBrowserUrl {
@@ -18,193 +40,179 @@ pub struct PendingBrowserUrl {
     url: String,
 }
 
-fn pending_urls(inbox: &UrlQueue) -> Vec<PendingBrowserUrl> {
-    inbox
-        .pending()
-        .iter()
-        .map(|item| PendingBrowserUrl {
-            id: item.id.to_string(),
-            url: item.url.clone(),
-        })
-        .collect()
-}
-
-/// Temporary presentation only: never persist chooser dimensions as dashboard geometry.
-#[derive(Default)]
-pub struct ChooserPresentation(Mutex<Option<WindowSnapshot>>);
-
-struct WindowSnapshot {
-    size: PhysicalSize<u32>,
-    position: PhysicalPosition<i32>,
-    visible: bool,
-    minimized: bool,
-    maximized: bool,
-    fullscreen: bool,
-    resizable: bool,
-    closable: bool,
-}
-
-impl WindowSnapshot {
-    fn capture(window: &WebviewWindow) -> tauri::Result<Self> {
-        Ok(Self {
-            size: window.inner_size()?,
-            position: window.outer_position()?,
-            visible: window.is_visible()?,
-            minimized: window.is_minimized()?,
-            maximized: window.is_maximized()?,
-            fullscreen: window.is_fullscreen()?,
-            resizable: window.is_resizable()?,
-            closable: window.is_closable()?,
-        })
-    }
-
-    fn restore(&self, window: &WebviewWindow) -> tauri::Result<()> {
-        // Attempt every operation even if one fails, especially restoring Close.
-        let mut result = Ok(());
-        let mut apply = |next: tauri::Result<()>| {
-            if result.is_ok() {
-                result = next;
-            }
-        };
-        if !self.visible || self.minimized {
-            apply(window.hide());
-        }
-        apply(window.set_resizable(self.resizable));
-        apply(window.set_closable(self.closable));
-        apply(window.set_min_size(Some(LogicalSize::new(960.0, 640.0))));
-        apply(window.set_size(self.size));
-        apply(window.set_position(self.position));
-        if self.maximized {
-            apply(window.maximize());
-        }
-        if self.fullscreen {
-            apply(window.set_fullscreen(true));
-        }
-        if self.visible {
-            apply(window.show());
-        }
-        if self.minimized {
-            apply(window.minimize());
-        }
-        // Do not focus the dashboard: the selected browser should keep focus.
-        result
+fn pending_urls(inbox: &UrlQueue) -> PendingBrowserUrls {
+    PendingBrowserUrls {
+        revision: inbox.revision().to_string(),
+        urls: inbox
+            .pending()
+            .iter()
+            .map(|item| PendingBrowserUrl {
+                id: item.id.to_string(),
+                url: item.url.clone(),
+            })
+            .collect(),
     }
 }
 
-fn chooser_size(height: Option<f64>, available: Option<(f64, f64)>) -> (f64, f64) {
-    let height = height
-        .filter(|value| value.is_finite())
-        .unwrap_or(520.0)
-        .clamp(300.0, 620.0);
-    let (width_limit, height_limit) = available.unwrap_or((480.0, 620.0));
+#[cfg(any(target_os = "macos", windows, test))]
+fn chooser_size(available: Option<(f64, f64)>) -> (f64, f64) {
+    let (width_limit, height_limit) = available.unwrap_or((480.0, 520.0));
     (
         480.0_f64.min(width_limit.max(1.0)),
-        height.min(height_limit.max(1.0)),
+        520.0_f64.min(height_limit.max(1.0)),
     )
 }
 
-pub(crate) fn chooser_active(app: &tauri::AppHandle) -> bool {
-    app.state::<ChooserPresentation>()
-        .0
-        .lock()
-        .map(|state| state.is_some())
-        .unwrap_or(true)
-}
-
-/// Native Close/Cmd+W requests a single frontend dismissal. It never shuts down
-/// the sidecar, including before first render and during final restoration.
-pub(crate) fn handle_chooser_close(window: &WebviewWindow) -> bool {
-    let app = window.app_handle();
-    let inbox = app.state::<UrlInbox>();
-    let Ok(pending) = inbox.0.lock() else {
-        return true;
-    };
-    match pending.close_action(chooser_active(app)) {
-        CloseAction::CloseDashboard => false,
-        CloseAction::WaitForFrontend => true,
-        CloseAction::Dismiss(id) => {
-            // Only the request identity crosses the event bridge, never the URL.
-            // An unavailable frontend leaves the inbox untouched, safely retryable.
-            let _ = window.emit_to(
-                window.label(),
-                "browser-chooser-close-requested",
-                id.to_string(),
-            );
-            true
-        }
-    }
-}
-
-fn restore_dashboard(window: &WebviewWindow) -> Result<(), String> {
-    let state = window.app_handle().state::<ChooserPresentation>();
-    let mut state = state.0.lock().map_err(|_| "Chooser window unavailable")?;
-    if let Some(snapshot) = state.as_ref() {
-        snapshot
-            .restore(window)
-            .map_err(|_| "Could not restore the dashboard window")?;
-        *state = None;
+#[cfg(any(target_os = "macos", windows))]
+fn position_chooser(window: &WebviewWindow) -> tauri::Result<()> {
+    let monitor = window
+        .cursor_position()
+        .ok()
+        .and_then(|point| window.monitor_from_point(point.x, point.y).ok().flatten())
+        .or_else(|| window.current_monitor().ok().flatten())
+        .or_else(|| window.primary_monitor().ok().flatten());
+    if let Some(monitor) = monitor {
+        let work = monitor.work_area();
+        let scale = monitor.scale_factor();
+        // Leave room for the native titlebar and a small work-area margin.
+        let (width, height) = chooser_size(Some((
+            f64::from(work.size.width) / scale - 24.0,
+            f64::from(work.size.height) / scale - 64.0,
+        )));
+        // Move while hidden before measuring, so a change in monitor scale is
+        // reflected in outer_size rather than centering with the old screen's DPI.
+        window.set_position(work.position)?;
+        window.set_size(LogicalSize::new(width, height))?;
+        let outer = window.outer_size()?;
+        window.set_position(PhysicalPosition::new(
+            work.position.x
+                + (i64::from(work.size.width).saturating_sub(i64::from(outer.width)) / 2).max(0)
+                    as i32,
+            work.position.y
+                + (i64::from(work.size.height).saturating_sub(i64::from(outer.height)) / 2).max(0)
+                    as i32,
+        ))?;
     }
     Ok(())
 }
 
-/// The frontend calls this only after rendering the chooser-only view. Never show
-/// the dashboard first, and never replace the original snapshot for the next URL.
+/// Pre-created once, from its own HTML/React entry. No dashboard window operations.
+#[cfg(any(target_os = "macos", windows))]
+pub fn create_chooser(app: &tauri::App, origin: &str) -> tauri::Result<()> {
+    let port = url::Url::parse(origin)
+        .expect("validated sidecar origin")
+        .port();
+    let window = WebviewWindowBuilder::new(
+        app,
+        "chooser",
+        WebviewUrl::External(
+            format!("{origin}/chooser")
+                .parse()
+                .expect("validated sidecar origin"),
+        ),
+    )
+    .title("AliasMode")
+    .visible(false)
+    .disable_drag_drop_handler()
+    .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
+    .focused(false)
+    .inner_size(480.0, 520.0)
+    .resizable(false)
+    .minimizable(false)
+    .maximizable(false)
+    .closable(true)
+    .always_on_top(true)
+    .background_color(tauri::window::Color(248, 247, 245, 255))
+    .on_navigation(move |url| {
+        url.scheme() == "http" && url.host_str() == Some("127.0.0.1") && url.port() == port
+    })
+    .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
+    .build()?;
+    position_chooser(&window)?;
+    // Tauri 2.11 exposes ns_window(), but not FullScreenAuxiliary. AppKit access
+    // stays on the main thread and the borrowed NSWindow never escapes this call.
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
+        let native = window.ns_window()?;
+        let native = unsafe { &*native.cast::<NSWindow>() };
+        native.setCollectionBehavior(
+            NSWindowCollectionBehavior::CanJoinAllSpaces
+                | NSWindowCollectionBehavior::FullScreenAuxiliary
+                | NSWindowCollectionBehavior::Stationary,
+        );
+        native.setHidesOnDeactivate(false);
+    }
+    let chooser = window.clone();
+    window.on_window_event(move |event| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            let inbox = chooser.state::<UrlInbox>();
+            if let Ok(pending) = inbox.0.lock() {
+                if let Some(item) = pending.pending().first() {
+                    // Identity only. Busy frontend operations retain ownership of the link.
+                    let _ = chooser.emit_to(
+                        "chooser",
+                        "browser-chooser-close-requested",
+                        item.id.to_string(),
+                    );
+                } else {
+                    let _ = chooser.hide();
+                }
+            };
+        }
+    });
+    Ok(())
+}
+
+/// Show only the head that React has committed. A stale reply cannot show
+/// an empty window or raise it again after a successful browser launch.
 #[tauri::command]
-pub fn present_browser_chooser(
+pub async fn present_browser_chooser(
     window: WebviewWindow,
     origin: State<'_, CredentialOrigin>,
-    inbox: State<'_, UrlInbox>,
-    presentation: State<'_, ChooserPresentation>,
-    height: Option<f64>,
+    id: String,
+    dark: bool,
 ) -> Result<(), String> {
     authorize(&window, &origin)?;
-    let pending = inbox.0.lock().map_err(|_| "URL inbox unavailable")?;
-    if pending.is_empty() {
-        return Ok(());
+    if window.label() != "chooser" {
+        return Err("Only the chooser can present links".into());
     }
-    let mut state = presentation
-        .0
-        .lock()
-        .map_err(|_| "Chooser window unavailable")?;
-    if state.is_some() {
-        return Ok(());
+    #[cfg(any(target_os = "macos", windows))]
+    {
+        let inbox = window.state::<UrlInbox>();
+        let pending = inbox.0.lock().map_err(|_| "URL inbox unavailable")?;
+        if !pending
+            .pending()
+            .first()
+            .is_some_and(|item| item.id.to_string() == id)
+        {
+            return Ok(());
+        }
+        if !window
+            .is_visible()
+            .map_err(|_| "Could not inspect chooser")?
+        {
+            position_chooser(&window).map_err(|_| "Could not position chooser")?;
+        }
+        let color = if dark {
+            tauri::window::Color(21, 21, 26, 255)
+        } else {
+            tauri::window::Color(248, 247, 245, 255)
+        };
+        window
+            .set_background_color(Some(color))
+            .map_err(|_| "Could not prepare chooser")?;
+        window.show().map_err(|_| "Could not show chooser")?;
+        window
+            .set_focus()
+            .map_err(|_| "Could not focus chooser".to_owned())
     }
-    let snapshot =
-        WindowSnapshot::capture(&window).map_err(|_| "Could not inspect dashboard window")?;
-    let available = window.current_monitor().ok().flatten().map(|monitor| {
-        let work = monitor.work_area();
-        (
-            f64::from(work.size.width) / monitor.scale_factor() - 32.0,
-            f64::from(work.size.height) / monitor.scale_factor() - 64.0,
-        )
-    });
-    let (width, height) = chooser_size(height, available);
-    let result = (|| -> tauri::Result<()> {
-        if snapshot.fullscreen {
-            window.set_fullscreen(false)?;
-        }
-        if snapshot.maximized {
-            window.unmaximize()?;
-        }
-        window.set_min_size(Some(LogicalSize::new(width.min(320.0), height.min(300.0))))?;
-        window.set_size(LogicalSize::new(width, height))?;
-        window.set_resizable(false)?;
-        window.set_closable(true)?;
-        window.center()?;
-        window.unminimize()?;
-        window.show()?;
-        window.set_focus()?;
-        Ok(())
-    })();
-    if result.is_err() {
-        // Retain the guard and snapshot if recovery fails, so Close cannot exit.
-        if snapshot.restore(&window).is_err() {
-            *state = Some(snapshot);
-        }
-        return Err("Could not show the compact browser chooser".into());
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        let _ = (id, dark);
+        Err("Browser routing is available on macOS and Windows".into())
     }
-    *state = Some(snapshot);
-    Ok(())
 }
 
 fn web_url(value: &str) -> bool {
@@ -217,7 +225,8 @@ fn web_url(value: &str) -> bool {
         })
 }
 
-pub fn receive(app: &tauri::AppHandle, urls: impl IntoIterator<Item = String>) {
+#[cfg(any(target_os = "macos", windows))]
+pub fn receive(app: &tauri::AppHandle, urls: impl IntoIterator<Item = String>) -> bool {
     let inbox = app.state::<UrlInbox>();
     let mut received = false;
     if let Ok(mut pending) = inbox.0.lock() {
@@ -228,17 +237,14 @@ pub fn receive(app: &tauri::AppHandle, urls: impl IntoIterator<Item = String>) {
         }
     }
     if !received {
-        return;
+        return false;
     }
-    // A ready frontend presents the first URL. Subsequent OS links may bring
-    // the already compact chooser forward without flashing the dashboard.
-    if chooser_active(app) {
-        if let Some(window) = app.get_webview_window("main") {
-            let _ = window.unminimize();
-            let _ = window.show();
-            let _ = window.set_focus();
-        }
+    if let Ok(mut launch) = app.state::<DesktopLaunch>().0.lock() {
+        launch.link_received = true;
     }
+    // No URL crosses the event bridge. Initial fetch covers events before mount.
+    let _ = app.emit_to("chooser", "browser-links-changed", ());
+    true
 }
 
 #[tauri::command]
@@ -246,7 +252,7 @@ pub fn pending_browser_urls(
     window: WebviewWindow,
     origin: State<'_, CredentialOrigin>,
     inbox: State<'_, UrlInbox>,
-) -> Result<Vec<PendingBrowserUrl>, String> {
+) -> Result<PendingBrowserUrls, String> {
     authorize(&window, &origin)?;
     let pending = inbox.0.lock().map_err(|_| "URL inbox unavailable")?;
     Ok(pending_urls(&pending))
@@ -258,54 +264,105 @@ pub fn dismiss_browser_url(
     origin: State<'_, CredentialOrigin>,
     inbox: State<'_, UrlInbox>,
     id: String,
-) -> Result<Vec<PendingBrowserUrl>, String> {
+) -> Result<PendingBrowserUrls, String> {
     authorize(&window, &origin)?;
     let id = id.parse::<u64>().map_err(|_| "Invalid link request")?;
     let mut pending = inbox.0.lock().map_err(|_| "URL inbox unavailable")?;
     pending.dismiss(id);
-    // Keep the presentation guard until the frontend has removed the link UI.
-    Ok(pending_urls(&pending))
-}
-
-/// Second phase: the frontend has committed its empty-queue view. Holding the
-/// inbox lock makes new-link arrival atomic with restoration. A failed restore
-/// retains the snapshot and close guard, and can be retried without losing URLs.
-#[tauri::command]
-pub fn finish_browser_chooser(
-    window: WebviewWindow,
-    origin: State<'_, CredentialOrigin>,
-    inbox: State<'_, UrlInbox>,
-) -> Result<Vec<PendingBrowserUrl>, String> {
-    authorize(&window, &origin)?;
-    let mut pending = inbox.0.lock().map_err(|_| "URL inbox unavailable")?;
     if pending.is_empty() {
-        restore_dashboard(&window)?;
-        pending.finish();
+        if let Some(chooser) = window.app_handle().get_webview_window("chooser") {
+            chooser.hide().map_err(|_| "Could not hide chooser")?;
+        }
     }
+    let _ = window.emit_to("chooser", "browser-links-changed", ());
     Ok(pending_urls(&pending))
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub struct Browser {
     path: String,
     name: String,
     icon: Option<String>,
 }
 
+type CachedIcon = (Option<SystemTime>, Option<String>);
+static ICONS: OnceLock<Mutex<HashMap<String, CachedIcon>>> = OnceLock::new();
+static CATALOG: Mutex<Option<(Instant, Vec<Browser>)>> = Mutex::new(None);
+
+fn cached_icon(path: &str, extract: impl FnOnce() -> Option<String>) -> Option<String> {
+    let stamp = std::fs::metadata(path)
+        .ok()
+        .and_then(|meta| meta.modified().ok());
+    let cache = ICONS.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(cache) = cache.lock() {
+        if let Some((modified, icon)) = cache.get(path) {
+            if *modified == stamp {
+                return icon.clone();
+            }
+        }
+    }
+    let icon = extract();
+    if let Ok(mut cache) = cache.lock() {
+        cache.insert(path.into(), (stamp, icon.clone()));
+    }
+    icon
+}
+
+#[derive(Serialize)]
+pub struct BrowserIcon {
+    path: String,
+    icon: Option<String>,
+}
+
+#[tauri::command]
+pub async fn browser_icons(
+    window: WebviewWindow,
+    origin: State<'_, CredentialOrigin>,
+    paths: Vec<String>,
+) -> Result<Vec<BrowserIcon>, String> {
+    authorize(&window, &origin)?;
+    #[cfg(target_os = "macos")]
+    return on_browser_main_thread(window.app_handle(), move || {
+        Ok(paths
+            .into_iter()
+            .map(|path| {
+                let icon = app_icon(&path);
+                BrowserIcon { path, icon }
+            })
+            .collect())
+    })
+    .await;
+    #[cfg(windows)]
+    return tauri::async_runtime::spawn_blocking(move || {
+        paths
+            .into_iter()
+            .map(|path| {
+                let icon = cached_icon(&path, || windows::app_icon(&path));
+                BrowserIcon { path, icon }
+            })
+            .collect()
+    })
+    .await
+    .map_err(|_| "Could not read application icons".into());
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        let _ = paths;
+        Ok(Vec::new())
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn browser(path: &str) -> Result<Browser, String> {
+    use objc2_foundation::{NSBundle, NSString};
     let path = std::fs::canonicalize(path).map_err(|_| "Application not found")?;
     if path.extension().and_then(|s| s.to_str()) != Some("app") || !path.is_dir() {
         return Err("Choose an installed .app application".into());
     }
-    let output = std::process::Command::new("/usr/libexec/PlistBuddy")
-        .args(["-c", "Print :CFBundleIdentifier"])
-        .arg(path.join("Contents/Info.plist"))
-        .output()
-        .map_err(|_| "Cannot inspect application")?;
-    let id = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    if !output.status.success()
-        || id.is_empty()
+    let id = NSBundle::bundleWithPath(&NSString::from_str(&path.to_string_lossy()))
+        .and_then(|bundle| bundle.bundleIdentifier())
+        .ok_or("Cannot inspect application")?
+        .to_string();
+    if id.is_empty()
         || id == "com.aliasmode.desktop"
         || std::env::current_exe().is_ok_and(|exe| exe.starts_with(&path))
     {
@@ -324,15 +381,45 @@ fn browser(path: &str) -> Result<Browser, String> {
 
 #[cfg(target_os = "macos")]
 fn browser_with_icon(path: &str) -> Result<Browser, String> {
-    use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSWorkspace};
-    use objc2_foundation::{NSDataBase64EncodingOptions, NSDictionary, NSString};
     let mut selected = browser(path)?;
-    // Called only by the main-thread closure below. No files leave this machine.
-    selected.icon = (|| {
-        let image = NSWorkspace::sharedWorkspace().iconForFile(&NSString::from_str(&selected.path));
-        let tiff = image.TIFFRepresentation()?;
-        let bitmap = NSBitmapImageRep::imageRepWithData(&tiff)?;
-        // Empty properties contain no incorrectly typed values.
+    selected.icon = app_icon(&selected.path);
+    Ok(selected)
+}
+
+#[cfg(target_os = "macos")]
+fn app_icon(path: &str) -> Option<String> {
+    use objc2::AllocAnyThread;
+    use objc2_app_kit::{
+        NSBitmapImageFileType, NSBitmapImageRep, NSCompositingOperation, NSDeviceRGBColorSpace,
+        NSGraphicsContext, NSWorkspace,
+    };
+    use objc2_foundation::{
+        NSDataBase64EncodingOptions, NSDictionary, NSPoint, NSRect, NSSize, NSString,
+    };
+    let path = std::fs::canonicalize(path).ok()?;
+    // Runtime executables live inside .app bundles; read the app's real icon.
+    let path = path
+        .ancestors()
+        .find(|part| part.extension().is_some_and(|ext| ext == "app"))
+        .unwrap_or(&path);
+    let path = path.to_string_lossy();
+    cached_icon(&path, || {
+        let image = NSWorkspace::sharedWorkspace().iconForFile(&NSString::from_str(&path));
+        let bitmap = unsafe {
+            NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(
+            NSBitmapImageRep::alloc(), std::ptr::null_mut(), 48, 48, 8, 4, true, false, NSDeviceRGBColorSpace, 0, 0,
+        )
+        }?;
+        let context = NSGraphicsContext::graphicsContextWithBitmapImageRep(&bitmap)?;
+        NSGraphicsContext::saveGraphicsState_class();
+        NSGraphicsContext::setCurrentContext(Some(&context));
+        image.drawInRect_fromRect_operation_fraction(
+            NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(48.0, 48.0)),
+            NSRect::ZERO,
+            NSCompositingOperation::Copy,
+            1.0,
+        );
+        NSGraphicsContext::restoreGraphicsState_class();
         let png = unsafe {
             bitmap.representationUsingType_properties(
                 NSBitmapImageFileType::PNG,
@@ -346,8 +433,7 @@ fn browser_with_icon(path: &str) -> Result<Browser, String> {
             "data:image/png;base64,{}",
             png.base64EncodedStringWithOptions(NSDataBase64EncodingOptions::empty())
         ))
-    })();
-    Ok(selected)
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -369,10 +455,20 @@ async fn on_browser_main_thread<T: Send + 'static>(
 pub async fn installed_browsers(
     window: WebviewWindow,
     origin: State<'_, CredentialOrigin>,
+    refresh: Option<bool>,
 ) -> Result<Vec<Browser>, String> {
     authorize(&window, &origin)?;
+    if !refresh.unwrap_or(false) {
+        if let Ok(cache) = CATALOG.lock() {
+            if let Some((at, browsers)) = cache.as_ref() {
+                if at.elapsed() < Duration::from_secs(60) {
+                    return Ok(browsers.clone());
+                }
+            }
+        }
+    }
     #[cfg(target_os = "macos")]
-    {
+    let result = {
         on_browser_main_thread(window.app_handle(), || {
             let mut result = Vec::new();
             let mut roots = vec![
@@ -394,9 +490,7 @@ pub async fn installed_browsers(
                     "Opera",
                     "Arc",
                 ] {
-                    if let Ok(item) =
-                        browser_with_icon(&root.join(format!("{name}.app")).to_string_lossy())
-                    {
+                    if let Ok(item) = browser(&root.join(format!("{name}.app")).to_string_lossy()) {
                         if !result
                             .iter()
                             .any(|existing: &Browser| existing.path == item.path)
@@ -408,10 +502,18 @@ pub async fn installed_browsers(
             }
             Ok(result)
         })
+        .await?
+    };
+    #[cfg(windows)]
+    let result = tauri::async_runtime::spawn_blocking(windows::installed_browsers)
         .await
+        .map_err(|_| "Could not discover browsers")?;
+    #[cfg(not(any(target_os = "macos", windows)))]
+    let result = Vec::new();
+    if let Ok(mut cache) = CATALOG.lock() {
+        *cache = Some((Instant::now(), result.clone()));
     }
-    #[cfg(not(target_os = "macos"))]
-    Ok(Vec::new())
+    Ok(result)
 }
 
 #[tauri::command]
@@ -425,7 +527,13 @@ pub async fn validate_browser_application(
     {
         on_browser_main_thread(window.app_handle(), move || browser_with_icon(&path)).await
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        tauri::async_runtime::spawn_blocking(move || windows::browser_with_icon(&path))
+            .await
+            .map_err(|_| "Could not read application")?
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = path;
         Err("Browser routing is available on macOS".into())
@@ -459,7 +567,11 @@ pub fn open_browser_url(
             Err("Browser could not open the link".into())
         }
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        windows::open_browser_url(&path, &url)
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = path;
         Err("Browser routing is available on macOS".into())
@@ -475,6 +587,7 @@ pub struct DefaultBrowserStatus {
 }
 
 impl DefaultBrowserStatus {
+    #[cfg(any(target_os = "macos", test))]
     fn new(http_handler: Option<String>, https_handler: Option<String>) -> Self {
         Self {
             is_default: http_handler.as_deref() == Some("com.aliasmode.desktop")
@@ -610,7 +723,12 @@ pub async fn default_browser_status(
     {
         default_browser::status(app).await
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        let _ = app;
+        windows::status()
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = app;
         Err("Default browser settings are available on macOS".into())
@@ -628,7 +746,11 @@ pub async fn request_default_browser(
     {
         default_browser::request(app).await
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(windows)]
+    {
+        windows::request(app)
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
     {
         let _ = app;
         Err("Default browser settings are available on macOS".into())
@@ -640,12 +762,24 @@ mod tests {
     use super::{chooser_size, default_request_cancelled, web_url, DefaultBrowserStatus};
     #[test]
     fn chooser_is_compact_and_fits_the_monitor() {
-        assert_eq!(chooser_size(None, None), (480.0, 520.0));
-        assert_eq!(chooser_size(Some(100.0), None), (480.0, 300.0));
-        assert_eq!(chooser_size(Some(999.0), None), (480.0, 620.0));
-        assert_eq!(chooser_size(Some(f64::NAN), None), (480.0, 520.0));
-        assert_eq!(chooser_size(Some(f64::INFINITY), None), (480.0, 520.0));
-        assert_eq!(chooser_size(None, Some((420.0, 400.0))), (420.0, 400.0));
+        assert_eq!(chooser_size(None), (480.0, 520.0));
+        assert_eq!(chooser_size(Some((420.0, 400.0))), (420.0, 400.0));
+        assert_eq!(chooser_size(Some((1920.0, 1080.0))), (480.0, 520.0));
+        assert_eq!(chooser_size(Some((0.0, -10.0))), (1.0, 1.0));
+    }
+
+    #[test]
+    fn ipc_snapshots_preserve_revision_and_duplicate_occurrence_ids() {
+        let mut queue = super::UrlQueue::default();
+        queue.push("https://example.com".into());
+        queue.push("https://example.com".into());
+        queue.dismiss(queue.pending()[0].id);
+        assert_eq!(
+            serde_json::to_value(super::pending_urls(&queue)).unwrap(),
+            serde_json::json!({
+                "revision": "3", "urls": [{"id": "2", "url": "https://example.com"}],
+            })
+        );
     }
 
     #[test]

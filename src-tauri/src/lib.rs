@@ -478,24 +478,20 @@ pub fn run() {
     let background = background_requested(std::env::args_os());
     let update_relaunch = update_attempt::parse_relaunch_argument(std::env::args_os().skip(1));
     let import_request = parse_cloakpit_import_args(std::env::args_os().skip(1));
-    let app = tauri::Builder::default()
-        .manage(RevealRequested::default())
+    let builder = tauri::Builder::default().manage(RevealRequested::default());
+    #[cfg(any(target_os = "macos", windows))]
+    let builder = builder.manage(url_router::DesktopLaunch::default());
+    let app = builder
         .manage(url_router::UrlInbox::default())
-        .manage(url_router::ChooserPresentation::default())
         .manage(releases::UpdateCoordinator::default())
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
-            url_router::receive(
-                app,
-                argv.iter()
-                    .filter(|value| value.starts_with("http://") || value.starts_with("https://"))
-                    .cloned(),
-            );
-            // Link launches are revealed only after the compact chooser is ready.
-            if argv
-                .iter()
-                .any(|value| value.starts_with("http://") || value.starts_with("https://"))
-                || background_requested(argv)
+            #[cfg(any(target_os = "macos", windows))]
             {
+                if url_router::receive(app, argv.iter().cloned()) {
+                    return;
+                }
+            }
+            if background_requested(argv) {
                 return;
             }
             app.state::<RevealRequested>()
@@ -514,10 +510,10 @@ pub fn run() {
             url_router::pending_browser_urls,
             url_router::present_browser_chooser,
             url_router::dismiss_browser_url,
-            url_router::finish_browser_chooser,
             url_router::installed_browsers,
-            browser_order::browser_order,
-            browser_order::save_browser_order,
+            browser_order::browser_preferences,
+            browser_order::save_routing_preferences,
+            url_router::browser_icons,
             url_router::validate_browser_application,
             url_router::open_browser_url,
             url_router::default_browser_status,
@@ -683,6 +679,20 @@ pub fn run() {
             ) {
                 return Err(error.into());
             }
+            #[cfg(any(target_os = "macos", windows))]
+            {
+                app.add_capability(
+                    CapabilityBuilder::new(format!("chooser-{port}"))
+                        .local(false)
+                        .window("chooser")
+                        .remote(format!("{origin}/*"))
+                        .permission("allow-browser-chooser")
+                        .permission("core:event:allow-listen")
+                        .permission("core:event:allow-unlisten"),
+                )?;
+                url_router::receive(app.handle(), std::env::args().skip(1));
+                url_router::create_chooser(app, &origin)?;
+            }
 
             let allowed_port = port;
             let shell_handle = handle.clone();
@@ -692,13 +702,24 @@ pub fn run() {
                 .map_err(|error| boxed(format!("invalid sidecar URL: {error}")))?;
             let readiness_data_dir = data_dir.clone();
             let webview_builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
+                .disable_drag_drop_handler()
                 .title("AliasMode")
-                .visible(!background)
+                .visible(!cfg!(any(target_os = "macos", windows)) && !background)
+                .focused(false)
                 .inner_size(1280.0, 800.0)
                 .min_inner_size(960.0, 640.0)
                 .on_page_load(move |window, payload| {
                     if !matches!(payload.event(), PageLoadEvent::Finished) {
                         return;
+                    }
+                    #[cfg(any(target_os = "macos", windows))]
+                    if let Ok(mut launch) = window
+                        .app_handle()
+                        .state::<url_router::DesktopLaunch>()
+                        .0
+                        .lock()
+                    {
+                        launch.page_loaded = true;
                     }
                     let reveal_requested = window
                         .app_handle()
@@ -785,7 +806,35 @@ pub fn run() {
     app.run_return(move |app, event| match event {
         #[cfg(target_os = "macos")]
         tauri::RunEvent::Opened { urls } => {
-            url_router::receive(app, urls.into_iter().map(|url| url.to_string()))
+            url_router::receive(app, urls.into_iter().map(|url| url.to_string()));
+        }
+        #[cfg(any(target_os = "macos", windows))]
+        tauri::RunEvent::MainEventsCleared => {
+            // tao drains queued native events before this checkpoint. setup runs
+            // inside did-finish-launching, before queued openURLs can be delivered.
+            let reveal = app
+                .state::<url_router::DesktopLaunch>()
+                .0
+                .lock()
+                .map(|mut launch| launch.take_initial_reveal(background))
+                .unwrap_or(false);
+            if reveal {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
+        }
+        #[cfg(target_os = "macos")]
+        tauri::RunEvent::Reopen { .. } => {
+            app.state::<RevealRequested>()
+                .0
+                .store(true, Ordering::Release);
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
         }
         tauri::RunEvent::ExitRequested {
             code: Some(code), ..

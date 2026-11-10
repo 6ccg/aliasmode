@@ -8,6 +8,7 @@
 
 import { join } from "node:path";
 import index from "./web/index.html";
+import chooser from "./web/chooser.html";
 import { profileDisplayNo, type Launcher } from "./launcher.ts";
 import type { ProfileStore } from "./store.ts";
 import type { RemoteCoordinator } from "./remote.ts";
@@ -311,7 +312,7 @@ export function serveDashboard(opts: DashboardServerOptions) {
     // Development mode watches the app folder for hot reload. On Windows that
     // watcher leaks kernel memory on every database write until the host stalls.
     development: false,
-    routes: { "/": index },
+    routes: { "/": index, "/chooser": chooser },
     websocket: {
       maxPayloadLength: AGENT_CONTROL_MAX_MESSAGE_BYTES,
       message(socket, message) {

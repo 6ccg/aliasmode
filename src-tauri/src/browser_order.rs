@@ -6,20 +6,34 @@ use std::{
     fs,
     io::{Read, Write},
     path::{Component, Path, PathBuf},
+    sync::Mutex,
 };
-use tauri::{Manager, State, WebviewWindow};
+use tauri::{Emitter, Manager, State, WebviewWindow};
 
 const MAX_BROWSERS: usize = 100;
 const MAX_PATH_BYTES: usize = 4096;
 // JSON may escape each byte into six characters. Bound reads before parsing.
 const MAX_FILE_BYTES: u64 = (MAX_BROWSERS * (MAX_PATH_BYTES * 6 + 4) + 128) as u64;
 
-#[derive(Deserialize, Serialize)]
+#[derive(Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct BrowserOrder {
+pub struct RoutingPreferences {
     version: u32,
     order: Vec<String>,
+    #[serde(default)]
+    added: Vec<String>,
+    #[serde(default)]
+    profiles: Vec<String>,
 }
+
+#[derive(Deserialize)]
+pub struct RoutingPreferencesPatch {
+    order: Option<Vec<String>>,
+    added: Option<Vec<String>>,
+    profiles: Option<Vec<String>>,
+}
+
+static SAVE_LOCK: Mutex<()> = Mutex::new(());
 
 fn validate_order(order: Vec<String>) -> Result<Vec<String>, String> {
     if order.len() > MAX_BROWSERS {
@@ -32,12 +46,14 @@ fn validate_order(order: Vec<String>) -> Result<Vec<String>, String> {
         if value.len() > MAX_PATH_BYTES
             || value.chars().any(char::is_control)
             || !path.is_absolute()
-            || path.extension().and_then(|ext| ext.to_str()) != Some("app")
+            || !path.extension().is_some_and(|ext| {
+                ext.eq_ignore_ascii_case(if cfg!(windows) { "exe" } else { "app" })
+            })
             || path
                 .components()
                 .any(|part| matches!(part, Component::ParentDir))
         {
-            return Err("Browser order must contain absolute .app paths".into());
+            return Err("Browser order must contain absolute browser application paths".into());
         }
         // Do not inspect or launch applications here. Removed apps may remain in saved order.
         if seen.insert(value.clone()) {
@@ -47,10 +63,15 @@ fn validate_order(order: Vec<String>) -> Result<Vec<String>, String> {
     Ok(result)
 }
 
-fn read_order(path: &Path) -> Result<Vec<String>, String> {
+fn read_preferences(path: &Path) -> Result<RoutingPreferences, String> {
     let file = match fs::File::open(path) {
         Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(RoutingPreferences {
+                version: 1,
+                ..Default::default()
+            })
+        }
         Err(_) => return Err("Could not read browser order".into()),
     };
     let mut bytes = Vec::new();
@@ -60,22 +81,42 @@ fn read_order(path: &Path) -> Result<Vec<String>, String> {
     if bytes.len() as u64 > MAX_FILE_BYTES {
         return Err("Saved browser order is too large".into());
     }
-    let saved: BrowserOrder =
+    let mut saved: RoutingPreferences =
         serde_json::from_slice(&bytes).map_err(|_| "Saved browser order is invalid")?;
     if saved.version != 1 {
         return Err("Saved browser order version is unsupported".into());
     }
-    validate_order(saved.order)
+    saved.order = validate_order(saved.order)?;
+    saved.added = validate_order(saved.added)?;
+    Ok(saved)
 }
 
-fn write_order(path: &Path, order: Vec<String>) -> Result<(), String> {
-    let order = validate_order(order)?;
+fn update_preferences(
+    path: &Path,
+    patch: RoutingPreferencesPatch,
+) -> Result<RoutingPreferences, String> {
+    let _lock = SAVE_LOCK
+        .lock()
+        .map_err(|_| "Browser preferences unavailable")?;
+    let mut saved = read_preferences(path)?;
+    if let Some(order) = patch.order {
+        saved.order = validate_order(order)?;
+    }
+    if let Some(added) = patch.added {
+        saved.added = validate_order(added)?;
+    }
+    if let Some(profiles) = patch.profiles {
+        let mut seen = HashSet::new();
+        saved.profiles = profiles
+            .into_iter()
+            .filter(|id| seen.insert(id.clone()))
+            .collect();
+    }
     let directory = path
         .parent()
         .ok_or("Browser order location is unavailable")?;
     fs::create_dir_all(directory).map_err(|_| "Could not create browser preferences directory")?;
-    let bytes = serde_json::to_vec(&BrowserOrder { version: 1, order })
-        .map_err(|_| "Could not encode browser order")?;
+    let bytes = serde_json::to_vec(&saved).map_err(|_| "Could not encode browser order")?;
     // A unique same-directory file prevents concurrent requests from colliding. Persist
     // atomically replaces the old file; failure preserves it and drops the temporary file.
     let mut temporary =
@@ -90,7 +131,7 @@ fn write_order(path: &Path, order: Vec<String>) -> Result<(), String> {
     temporary
         .persist(path)
         .map_err(|_| "Could not replace browser order")?;
-    Ok(())
+    Ok(saved)
 }
 
 fn preferences_path(window: &WebviewWindow) -> Result<PathBuf, String> {
@@ -103,31 +144,77 @@ fn preferences_path(window: &WebviewWindow) -> Result<PathBuf, String> {
 }
 
 #[tauri::command]
-pub fn browser_order(
+pub fn browser_preferences(
     window: WebviewWindow,
     origin: State<'_, CredentialOrigin>,
-) -> Result<Vec<String>, String> {
+) -> Result<RoutingPreferences, String> {
     authorize(&window, &origin)?;
-    read_order(&preferences_path(&window)?)
+    if !cfg!(any(target_os = "macos", windows)) {
+        return Err("Browser routing is available on macOS and Windows".into());
+    }
+    read_preferences(&preferences_path(&window)?)
 }
 
 #[tauri::command]
-pub fn save_browser_order(
+pub fn save_routing_preferences(
     window: WebviewWindow,
     origin: State<'_, CredentialOrigin>,
-    order: Vec<String>,
-) -> Result<(), String> {
+    patch: RoutingPreferencesPatch,
+) -> Result<RoutingPreferences, String> {
     authorize(&window, &origin)?;
-    write_order(&preferences_path(&window)?, order)
+    if !cfg!(any(target_os = "macos", windows)) {
+        return Err("Browser routing is available on macOS and Windows".into());
+    }
+    let saved = update_preferences(&preferences_path(&window)?, patch)?;
+    let _ = window.app_handle().emit("browser-preferences-changed", ());
+    Ok(saved)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn read_order(path: &Path) -> Result<Vec<String>, String> {
+        read_preferences(path).map(|prefs| prefs.order)
+    }
+    fn write_order(path: &Path, order: Vec<String>) -> Result<(), String> {
+        update_preferences(
+            path,
+            RoutingPreferencesPatch {
+                order: Some(order),
+                added: None,
+                profiles: None,
+            },
+        )
+        .map(|_| ())
+    }
+
+    #[test]
+    fn saves_added_apps_and_profile_order_without_overwriting_other_preferences() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("browser-order.json");
+        write_order(&path, vec![app_path("A")]).unwrap();
+        update_preferences(
+            &path,
+            RoutingPreferencesPatch {
+                order: None,
+                added: Some(vec![app_path("B")]),
+                profiles: Some(vec!["profile2".into(), "profile1".into()]),
+            },
+        )
+        .unwrap();
+        write_order(&path, vec![app_path("B"), app_path("A")]).unwrap();
+        let saved = read_preferences(&path).unwrap();
+        assert_eq!(saved.added, vec![app_path("B")]);
+        assert_eq!(saved.profiles, vec!["profile2", "profile1"]);
+    }
+
     fn app_path(name: &str) -> String {
         std::env::temp_dir()
-            .join(format!("{name}.app"))
+            .join(format!(
+                "{name}.{}",
+                if cfg!(windows) { "exe" } else { "app" }
+            ))
             .to_str()
             .unwrap()
             .to_owned()

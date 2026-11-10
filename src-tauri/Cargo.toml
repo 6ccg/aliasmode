@@ -1,6 +1,6 @@
 [package]
 name = "aliasmode-desktop"
-version = "0.1.0-beta.74.mod2"
+version = "0.1.0-beta.74.mod3"
 description = "AliasMode Windows desktop shell"
 edition = "2021"
 rust-version = "1.89"
@@ -47,10 +47,13 @@ tempfile = "3.23.0"
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6.2"
 objc2 = "0.6.4"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSWorkspace", "NSImage", "NSImageRep", "NSBitmapImageRep", "block2"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSBundle", "NSError", "NSString", "NSURL", "NSData", "NSDictionary"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSWindow", "NSWorkspace", "NSImage", "NSImageRep", "NSBitmapImageRep", "NSGraphicsContext", "NSGraphics", "objc2-core-foundation", "block2"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSBundle", "NSError", "NSString", "NSURL", "NSData", "NSDictionary", "NSGeometry", "objc2-core-foundation"] }
 
 [target.'cfg(windows)'.dependencies]
+winreg = "0.55.0"
+png = "0.18.1"
+base64 = "0.22.1"
 windows = { version = "0.62.2", features = [
   "Win32_Foundation",
   "Win32_Security_Credentials",
@@ -59,6 +62,10 @@ windows = { version = "0.62.2", features = [
   "Win32_System_JobObjects",
   "Win32_System_Registry",
   "Win32_System_Threading",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_Graphics_Gdi",
+  "Win32_System_Com",
 ] }
 
 # The Linux update unpacks the app folder itself; the updater already uses both crates.

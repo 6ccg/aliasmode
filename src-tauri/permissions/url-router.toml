@@ -1,4 +1,9 @@
 [[permission]]
 identifier = "allow-url-router"
-description = "Allows the main local dashboard to receive web links, open a selected installed browser, inspect the default browser, and request macOS default-browser consent."
-commands.allow = ["pending_browser_urls", "present_browser_chooser", "dismiss_browser_url", "finish_browser_chooser", "installed_browsers", "browser_order", "save_browser_order", "validate_browser_application", "open_browser_url", "default_browser_status", "request_default_browser"]
+description = "Allows browser routing settings in the main local dashboard."
+commands.allow = ["installed_browsers", "browser_preferences", "save_routing_preferences", "browser_icons", "validate_browser_application", "default_browser_status", "request_default_browser"]
+
+[[permission]]
+identifier = "allow-browser-chooser"
+description = "Allows link choice, browser discovery, icons and chooser preferences."
+commands.allow = ["pending_browser_urls", "present_browser_chooser", "dismiss_browser_url", "installed_browsers", "browser_preferences", "save_routing_preferences", "browser_icons", "open_browser_url", "validate_browser_application"]

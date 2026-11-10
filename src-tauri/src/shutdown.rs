@@ -168,15 +168,13 @@ pub fn install_close_handler(
     sidecar: SidecarSupervisor,
     origin: String,
 ) {
+    if window.label() != "main" {
+        return;
+    }
     let state = Arc::new(CloseState::default());
     window.clone().on_window_event(move |event| {
         if let WindowEvent::CloseRequested { api, .. } = event {
             api.prevent_close();
-            // Route titlebar Close/Cmd+W through the chooser's guarded handshake.
-            // No chooser close request can enter profile/session cleanup.
-            if crate::url_router::handle_chooser_close(&window) {
-                return;
-            }
             if state.in_progress.swap(true, Ordering::AcqRel) {
                 return;
             }

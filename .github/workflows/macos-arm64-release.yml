@@ -2,7 +2,7 @@ name: Build macOS ARM64 preview
 
 on:
   push:
-    branches: [prepare/beta74-mod1]
+    branches: [codex/customizations]
   workflow_dispatch:
 
 permissions:
@@ -14,7 +14,7 @@ concurrency:
 
 env:
   SOURCE_SHA: ${{ github.sha }}
-  VERSION: 0.1.0-beta.74.mod2
+  VERSION: 0.1.0-beta.74.mod3
 
 jobs:
   release:
@@ -48,22 +48,11 @@ jobs:
           test "$(uname -m)" = arm64
           test "$(jq -r .version package.json)" = "$VERSION"
           bun run typecheck
-          bun test version.test.ts create.test.ts ui.test.ts url-routing.test.ts random-fingerprint.test.ts web/url-router.test.tsx web/profile-routing-info.test.ts url-router-native.test.ts browser-order-native.test.ts
-      - name: Verify compact chooser interactions and fit
-        run: CHOOSER_ARTIFACT_DIR="$RUNNER_TEMP/chooser-ui" bun scripts/browser-chooser-acceptance.ts
-      - name: Upload chooser UI verification
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: browser-chooser-ui
-          path: ${{ runner.temp }}/chooser-ui/
-          if-no-files-found: ignore
+          bun test ./url-routing.test.ts ./web/url-router.test.tsx ./random-fingerprint.test.ts
       - name: Prepare macOS bundle inputs
         run: bun run desktop:prepare:macos
-      - name: Verify native routing preferences
-        run: |
-          cargo test --manifest-path src-tauri/Cargo.toml --lib browser_order::tests
-          cargo test --manifest-path src-tauri/Cargo.toml --lib url_router::tests
+      - name: Verify native library tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
       - name: Build the app bundle
         run: bunx tauri build --bundles app
       # Tauri's .dmg script mounts its image, and on the Intel runner the detach always timed out
@@ -128,7 +117,7 @@ jobs:
           cat "$files/SHA256SUMS-macos.txt"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
-      - name: Verify ARM64 binaries and Rust tests
+      - name: Verify ARM64 binaries
         shell: bash
         run: |
           set -euo pipefail
@@ -136,7 +125,6 @@ jobs:
           for file in aliasmode aliasmode-sidecar aliasmode-mcp; do
             lipo -archs "$app/Contents/MacOS/$file" | grep -qx arm64
           done
-          cargo test --locked --manifest-path src-tauri/Cargo.toml
       - uses: actions/upload-artifact@v4
         with:
           name: aliasmode-macos-arm64

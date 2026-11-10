@@ -1,8 +1,6 @@
 # AliasMode
 
-> **macOS local-manager fork:** adds a system-link chooser for local profiles and installed browsers, optional per-launch device fingerprint regeneration, and experimental running Chromium Dock number badges. Local networking, including Services, updates and runtime downloads, retains upstream behavior. No browser engine is forked or bundled by these changes.
->
-> Usage and limitations: [macOS URL routing](docs/macos-url-routing.md), [running Chromium Dock badges](docs/macos-dock-badges.md), [fingerprint rotation](docs/random-fingerprint.md), and [Local network privacy audit (中文)](docs/local-privacy-audit.md). These changes require macOS packaging and real-device validation before release. Installing an upstream update can replace this fork's customizations.
+> **Desktop fork:** Windows/macOS link chooser, optional per-launch fingerprint regeneration, and Profile identification. See [usage and limitations](docs/customizations.md). Networking and updates retain upstream behavior; an upstream update can replace these customizations.
 
 AliasMode is a free, open-source antidetect browser and local-first profile manager, with its own open-source engine, [AliasMode Firefox](https://github.com/aliasmode/aliasmode-firefox), and optional cloud synchronization for teams.
 
