@@ -46,8 +46,13 @@ import type { ProfileExport } from "./parse.ts";
 import { writeXlsx, readXlsx } from "./xlsx.ts";
 import { generateTotp } from "./totp.ts";
 import {
+  installAmoAddon,
   installExtension,
+  installFirefoxAddon,
   installWebStoreExtension,
+  isAmoSource,
+  isFirefoxAddonId,
+  parseAmoSlug,
   parseWebStoreExtensionId,
   removeExtensionFiles,
   type ExtensionFetch,
@@ -63,6 +68,7 @@ import { join, resolve, dirname } from "node:path";
 import { readdirSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { validAgentAuthorization } from "./agent-control.ts";
 import { ScriptError, prefetchPythonFor, type ScriptLibrary, type ScriptSupervisor } from "./scripts.ts";
+import { AgentError, type AgentRunner } from "./agent-runner.ts";
 import type { PythonRuntime } from "./python-runtime.ts";
 import { runtimeDownloads } from "./runtime-download.ts";
 import { loadServices } from "./services-directory.ts";
@@ -642,11 +648,7 @@ function applyEdits(p: Profile, set: Record<string, unknown>): boolean {
     delete p.proxyError;
   }
   if ("extensions" in set) {
-    const extensions = Array.isArray(set.extensions) ? set.extensions.map(String) : [];
-    if (profileEngine(p) === "firefox" && extensions.length > 0) {
-      throw new Error("Chrome extensions are unavailable for Firefox profiles");
-    }
-    p.extensions = extensions;
+    p.extensions = Array.isArray(set.extensions) ? set.extensions.map(String) : [];
   }
   if ("tags" in set) {
     p.tags = Array.isArray(set.tags)
@@ -669,6 +671,8 @@ function legalAcceptanceIsCurrent(legal: {
 
 export interface UiRuntimeOptions {
   scripts?: { library: ScriptLibrary; runner: ScriptSupervisor; nonce: string; python?: PythonRuntime };
+  /** The in-app AI agent; desktop only, authorized like scripts. */
+  agent?: AgentRunner;
   appConfig?: AppConfigStore;
   paths?: StatePaths;
   defaultCloudUrl?: string;
@@ -792,6 +796,63 @@ export async function handleUiRequest(
       return noStoreJson({ ok: false, error: "Unknown script operation" }, 404);
     } catch (error) {
       const status = error instanceof ScriptError || error instanceof CloudApiError ? error.status
+        : error instanceof CloudRequestError ? 502 : error instanceof SyntaxError || error instanceof URIError ? 400 : 500;
+      return noStoreJson({ ok: false, error: error instanceof SyntaxError ? "Invalid JSON request" : msg(error) }, status);
+    }
+  }
+
+  if (pathname === "/ui/api/agent" || pathname.startsWith("/ui/api/agent/")) {
+    const agent = options.agent;
+    if (!agent) return noStoreJson({ ok: false, error: "The agent is unavailable" }, 503);
+    // The desktop window holds the script capability; a source checkout has none and relies on loopback and same-origin.
+    if (options.scripts && !validAgentAuthorization(req.headers.get("authorization"), options.scripts.nonce)) {
+      return noStoreJson({ ok: false, error: "Agent authorization failed" }, 401);
+    }
+    const origin = req.headers.get("origin");
+    if (origin && origin !== new URL(req.url).origin) return noStoreJson({ ok: false, error: "Cross-origin requests are forbidden" }, 403);
+    if (req.method !== "GET") {
+      const rejected = rejectUntrustedJsonMutation(req);
+      if (rejected) return rejected;
+    }
+    try {
+      if (pathname === "/ui/api/agent" && req.method === "GET") {
+        return noStoreJson({ ok: true, settings: agent.settingsView(), conversations: agent.list() });
+      }
+      if (pathname === "/ui/api/agent/usage" && req.method === "GET") {
+        const cloud = options.cloudBrowser ? options.cloudConnection?.client : undefined;
+        if (!cloud) return noStoreJson({ ok: true, usage: null });
+        try {
+          return noStoreJson({ ok: true, usage: await cloud.aiUsage() });
+        } catch (error) {
+          // An older Cloud has no AI route yet.
+          if (error instanceof CloudApiError && error.status === 404) return noStoreJson({ ok: true, usage: null });
+          throw error;
+        }
+      }
+      if (pathname === "/ui/api/agent/settings" && req.method === "POST") {
+        return noStoreJson({ ok: true, settings: agent.saveSettings(await req.json()) });
+      }
+      if (pathname === "/ui/api/agent/conversations" && req.method === "POST") {
+        return noStoreJson({ ok: true, conversation: agent.start((await req.json())?.prompt) });
+      }
+      const match = pathname.match(/^\/ui\/api\/agent\/conversations\/([^/]+)(?:\/(messages|resume|stop))?$/);
+      if (match) {
+        const id = decodeURIComponent(match[1]!);
+        const action = match[2];
+        if (!action && req.method === "GET") return noStoreJson({ ok: true, conversation: agent.get(id) });
+        if (!action && req.method === "DELETE") {
+          await agent.remove(id);
+          return noStoreJson({ ok: true });
+        }
+        if (action === "messages" && req.method === "POST") {
+          return noStoreJson({ ok: true, conversation: agent.send(id, (await req.json())?.prompt) });
+        }
+        if (action === "resume" && req.method === "POST") return noStoreJson({ ok: true, conversation: agent.resume(id) });
+        if (action === "stop" && req.method === "POST") return noStoreJson({ ok: true, conversation: await agent.stop(id) });
+      }
+      return noStoreJson({ ok: false, error: "Unknown agent operation" }, 404);
+    } catch (error) {
+      const status = error instanceof AgentError || error instanceof CloudApiError ? error.status
         : error instanceof CloudRequestError ? 502 : error instanceof SyntaxError || error instanceof URIError ? 400 : 500;
       return noStoreJson({ ok: false, error: error instanceof SyntaxError ? "Invalid JSON request" : msg(error) }, status);
     }
@@ -980,6 +1041,7 @@ export async function handleUiRequest(
       pathname === "/ui/api/cloud-auth/forget";
     const finishAccountExit = exitsAccount ? options.cloudAuth.beginExit() : undefined;
     const resumeScripts = exitsAccount ? options.scripts?.runner.pause() : undefined;
+    const resumeAgent = exitsAccount ? options.agent?.pause() : undefined;
     const authTransition = exitsAccount ? undefined : await options.cloudAuth.acquireTransition();
     const transitionCurrent = () => !authTransition || options.cloudAuth!.isTransitionCurrent(authTransition);
     try {
@@ -997,6 +1059,7 @@ export async function handleUiRequest(
         code?: unknown;
       };
       if (exitsAccount) await options.scripts?.runner.stop();
+      if (exitsAccount) await options.agent?.stopAll();
       if (pathname === "/ui/api/cloud-auth/signup") {
         if (typeof body.email !== "string" || typeof body.password !== "string") {
           return Response.json({ ok: false, error: "email and password are required" }, { status: 400 });
@@ -1245,6 +1308,7 @@ export async function handleUiRequest(
       authTransition?.release();
       finishAccountExit?.();
       resumeScripts?.();
+      resumeAgent?.();
     }
   }
 
@@ -2062,7 +2126,10 @@ export async function handleUiRequest(
 
   // --- Extensions registry (upload / list / delete) ---
   if (pathname === "/ui/api/extensions" && req.method === "GET") {
-    return Response.json({ ok: true, extensions: store.listExtensions().map((e) => ({ id: e.id, name: e.name })) });
+    return Response.json({
+      ok: true,
+      extensions: store.listExtensions().map((e) => ({ id: e.id, name: e.name, engine: isFirefoxAddonId(e.id) ? "firefox" : "chromium" })),
+    });
   }
 
   if (pathname === "/ui/api/extensions/web-store" && req.method === "POST") {
@@ -2074,11 +2141,12 @@ export async function handleUiRequest(
     try {
       const body = (await req.json()) as { source?: unknown };
       source = String(body.source ?? "").trim();
-      id = parseWebStoreExtensionId(source);
+      id = isAmoSource(source) ? "" : parseWebStoreExtensionId(source);
+      if (!id) parseAmoSlug(source);
     } catch (error) {
       return Response.json({ ok: false, error: msg(error) }, { status: 400 });
     }
-    const existing = store.getExtension(id);
+    const existing = id ? store.getExtension(id) : null;
     if (existing) {
       return Response.json({
         ok: true,
@@ -2087,11 +2155,12 @@ export async function handleUiRequest(
       });
     }
     try {
-      const installed = await installWebStoreExtension(
-        source,
-        options.paths?.extensions,
-        options.extensionFetch,
-      );
+      // An addons.mozilla.org link names a slug; its add-on ID is known only after the lookup.
+      const installed = id
+        ? await installWebStoreExtension(source, options.paths?.extensions, options.extensionFetch)
+        : await installAmoAddon(source, options.paths?.extensions, options.extensionFetch);
+      const alreadyInstalled = !id && !!store.getExtension(installed.id);
+      id = installed.id;
       try {
         store.addExtension({ id, name: installed.name, loadDir: installed.loadDir });
       } catch (error) {
@@ -2101,7 +2170,7 @@ export async function handleUiRequest(
       return Response.json({
         ok: true,
         installed: { id, name: installed.name },
-        alreadyInstalled: false,
+        alreadyInstalled,
       });
     } catch (error) {
       return Response.json({ ok: false, error: msg(error) }, { status: 500 });
@@ -2109,16 +2178,23 @@ export async function handleUiRequest(
   }
 
   if (pathname === "/ui/api/extensions/upload" && req.method === "POST") {
+    // A page on another site can post a form here without a preflight; an add-on names its own ID.
+    const origin = req.headers.get("origin");
+    if (origin && origin !== new URL(req.url).origin) {
+      return Response.json({ ok: false, error: "cross-origin requests are forbidden" }, { status: 403 });
+    }
     if (remote) return Response.json({ ok: false, error: "remote mode: not supported" }, { status: 400 });
     try {
       const form = await req.formData();
       const installed: Array<{ id: string; name: string }> = [];
       for (const [, value] of form) {
         if (!(value instanceof File)) continue;
-        const id = "ext" + crypto.randomUUID().replace(/-/g, "").slice(0, 12);
         const bytes = new Uint8Array(await value.arrayBuffer());
-        const fallback = value.name.replace(/\.(zip|crx)$/i, "");
-        const { loadDir, name } = await installExtension(bytes, id, fallback, options.paths?.extensions);
+        const fallback = value.name.replace(/\.(zip|crx|xpi)$/i, "");
+        const chromeId = "ext" + crypto.randomUUID().replace(/-/g, "").slice(0, 12);
+        const { id, loadDir, name } = /\.xpi$/i.test(value.name)
+          ? await installFirefoxAddon(bytes, fallback, options.paths?.extensions)
+          : { id: chromeId, ...await installExtension(bytes, chromeId, fallback, options.paths?.extensions) };
         store.addExtension({ id, name, loadDir });
         installed.push({ id, name });
       }
@@ -2155,6 +2231,8 @@ export async function handleUiRequest(
 
   // Bulk assign / unassign one extension across many selected profiles.
   if (pathname === "/ui/api/profiles/extensions" && req.method === "POST") {
+    const rejected = rejectUntrustedJsonMutation(req);
+    if (rejected) return rejected;
     if (remote) return Response.json({ ok: false, error: "remote mode: not supported" }, { status: 400 });
     try {
       const body = (await req.json()) as { ids?: unknown; extensionId?: unknown; op?: unknown };
@@ -2162,13 +2240,12 @@ export async function handleUiRequest(
       const extId = String(body.extensionId ?? "").trim();
       const add = body.op !== "remove";
       if (!ids.length || !extId) return Response.json({ ok: false, error: "ids and extensionId required" }, { status: 400 });
-      const firefoxIds = ids.filter((id) => profileEngine(store.getProfile(id)) === "firefox");
-      if (firefoxIds.length > 0) {
-        return Response.json({ ok: false, error: "Chrome extensions are unavailable for Firefox profiles" }, { status: 400 });
-      }
       if (add && !store.getExtension(extId)) return Response.json({ ok: false, error: "unknown extension" }, { status: 404 });
+      // A Chrome extension goes only to Chromium profiles and a Firefox add-on only to Firefox profiles.
+      const engine = isFirefoxAddonId(extId) ? "firefox" : "chromium";
+      const targets = add ? ids.filter((id) => profileEngine(store.getProfile(id)) === engine) : ids;
       // An open browser loads the change at its next start.
-      return Response.json({ ok: true, updated: store.assignExtension(ids, extId, add) });
+      return Response.json({ ok: true, updated: store.assignExtension(targets, extId, add) });
     } catch (e) {
       return Response.json({ ok: false, error: msg(e) }, { status: 500 });
     }
@@ -2379,12 +2456,7 @@ export async function handleUiRequest(
     // Raising the window is a purely LOCAL operation (the browser runs on this operator in both
     // modes; bringToFront uses the local launch record + CDP), so it works in remote mode too.
     try {
-      const id = decodeURIComponent(raise[1]!);
-      if (profileEngine(store.getProfile(id)) === "firefox") {
-        return Response.json({ ok: false, error: "bringing a Firefox profile to the front is unavailable" }, { status: 400 });
-      }
-      await launcher.bringToFront(id);
-      return Response.json({ ok: true });
+      return Response.json({ ok: true, ...await launcher.bringToFront(decodeURIComponent(raise[1]!)) });
     } catch (e) {
       return Response.json({ ok: false, error: msg(e) }, { status: 500 });
     }

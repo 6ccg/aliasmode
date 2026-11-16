@@ -5,6 +5,8 @@ import { createRoot } from "react-dom/client";
 import "./styles.css";
 import "./proxies.css";
 import "./services.css";
+import "./agent.css";
+import { AgentHost } from "./agent.tsx";
 import { ProxiesPage } from "./proxies.tsx";
 import { ServicesPage } from "./services.tsx";
 import { CartIcon, ProxyProviderOffer, ProxyStoreContext, proxyOfferUrl, type ProxySrc } from "./proxy-offer.tsx";
@@ -80,6 +82,7 @@ import {
   checkFingerprint,
   restoreParkedSession,
   fetchExtensions,
+  extensionEngine,
   installWebStoreExtension,
   uploadExtensions,
   removeExtension,
@@ -157,7 +160,7 @@ const REFRESH_MS = 3000;
 const PROFILE_PAGE_SIZE = 50;
 const PAGE_SIZES = [25, 50, 100, 200];
 
-const PAGE_TITLES: Record<"profiles" | "scripts" | "settings" | "extensions" | "proxies" | "trash" | "services", string> = {
+const PAGE_TITLES: Record<"profiles" | "scripts" | "settings" | "extensions" | "proxies" | "trash" | "services" | "agent", string> = {
   profiles: "Profiles",
   scripts: "Scripts",
   settings: "Settings",
@@ -165,6 +168,7 @@ const PAGE_TITLES: Record<"profiles" | "scripts" | "settings" | "extensions" | "
   proxies: "Proxies",
   trash: "Trash",
   services: "Services",
+  agent: "Agent",
 };
 
 const SETTINGS_TABS = [
@@ -380,6 +384,7 @@ const ICONS = {
   filter: <path d="M4 5h16l-6 7v6l-4 2v-8z" />,
   sun: <><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></>,
   moon: <path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z" />,
+  agent: <><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z" /><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z" /></>,
   services: <><rect x="4" y="4" width="7" height="7" rx="1.5" /><rect x="13" y="4" width="7" height="7" rx="1.5" /><rect x="4" y="13" width="7" height="7" rx="1.5" /><rect x="13" y="13" width="7" height="7" rx="1.5" /></>,
   help: <><circle cx="12" cy="12" r="9" /><path d="M9.4 9.1a2.7 2.7 0 015.3.7c0 1.8-2.7 2.2-2.7 3.7" /><path d="M12 16.8v.3" /></>,
 } as const;
@@ -890,7 +895,7 @@ function FingerprintSettings({
         <div className="hint">{onTimezoneChange
           ? `${t("Leave a field blank to keep it automatic. A timezone you type stays when the proxy changes.")}${chromiumRuntime && cores ? ` ${t("AliasMode Chromium shows at most the processor count of the computer it runs on.")}` : ""}`
           : engine === "firefox"
-            ? t("AliasMode Firefox uses its native profile. CDP, PDF, and Chrome extensions are unavailable.")
+            ? t("AliasMode Firefox uses its native profile. Automation connects through Playwright instead of CDP, and add-ons come from addons.mozilla.org.")
             : t("The browser keeps the locked values coordinated. Screen and operating system are the only fingerprint settings you can override.")}</div>
         {onUndo && <button type="button" className="btn ghost" disabled={disabled} onClick={onUndo}>{t("Undo fingerprint edits")}</button>}
       </div>
@@ -1024,6 +1029,16 @@ function parseDesktopUpdateMessage(value: unknown): DesktopUpdateMessage {
 
 function desktopInvoke(): DesktopInvoke | undefined {
   return (window as any).__TAURI_INTERNALS__?.invoke as DesktopInvoke | undefined;
+}
+
+// On Windows the app raises a Firefox window itself: Windows lets only the active app move another
+// app's window forward, and Firefox's own raise only restores a minimized window.
+async function bringToFront(id: string) {
+  const result = await raiseProfile(id);
+  if (result?.ok && typeof result.browserPid === "number") {
+    await desktopInvoke()?.("raise_window", { pid: result.browserPid }).catch(() => {});
+  }
+  return result;
 }
 
 function UpdateHighlights({ version, highlights }: { version: string; highlights: string[] }) {
@@ -1256,7 +1271,7 @@ function App() {
   // "profiles" is the roster; "settings" replaces it in the same content area
   // rather than opening a dialog — Settings outgrew a modal. New profile and
   // Edit stay dialogs: short forms, and a page felt like too much ceremony.
-  const [view, setView] = useState<"profiles" | "scripts" | "settings" | "extensions" | "proxies" | "trash" | "services">("profiles");
+  const [view, setView] = useState<"profiles" | "scripts" | "settings" | "extensions" | "proxies" | "trash" | "services" | "agent">("profiles");
   const [scriptRunOpen, setScriptRunOpen] = useState(false);
   const [scriptRunProfiles, setScriptRunProfiles] = useState<UiProfile[]>([]);
   const [showCreate, setShowCreate] = useState(false);
@@ -1447,6 +1462,11 @@ function App() {
   }, []);
   // Offers open the shop on the Proxies page: the quantity is preselected and the shop scrolls into view.
   const [storeRequest, setStoreRequest] = useState({ quantity: 0, key: 0 });
+  // "Ask agent" on the profile list opens the agent panel with these profiles in the composer.
+  const [agentDraft, setAgentDraft] = useState({ text: "", key: 0 });
+  const askAgent = (picked: UiProfile[]) => {
+    setAgentDraft((current) => ({ text: `Profiles: ${picked.map((profile) => `${profile.name} (${profile.id})`).join(", ")}\n\n`, key: current.key + 1 }));
+  };
   const openStore = useCallback((quantity: number, src: ProxySrc) => {
     enterStore(src);
     setStoreRequest((current) => ({ quantity, key: current.key + 1 }));
@@ -2409,8 +2429,9 @@ function App() {
     ? existingGroups.filter((name) => team?.folders.some((folder) => folder.name === name && folder.permission === "edit" && !folder.archivedAt))
     : existingGroups;
   const selectedEditable = [...selected].every((id) => profiles.find((profile) => profile.id === id)?.permission === "edit");
-  const selectedProfilesSupportChromeExtensions = [...selected].every((id) =>
-    profiles.find((profile) => profile.id === id)?.engine === "chromium");
+  // Bulk assignment offers the extensions of the browsers among the selected profiles.
+  const selectedEngines = new Set([...selected].map((id) => profiles.find((profile) => profile.id === id)?.engine));
+  const bulkExtensionChoices = extensions.filter((item) => selectedEngines.has(item.engine));
   const folderCounts = useMemo(() => {
     const counts = new Map<string, number>();
     const byName = new Map(tree.map((folder) => [folder.name, folder]));
@@ -2427,16 +2448,16 @@ function App() {
   const installedExtensionIds = new Set(extensions.map((item) => item.id));
   const storedGroupDefaultExts = groupExtensionDefaults.find((item) => item.name === groupDefaultName)?.extensions ?? [];
   const editExtensionChoices = [
-    ...extensions.map((item) => ({ ...item, missing: false })),
+    ...extensions.filter((item) => item.engine === editEngine).map((item) => ({ ...item, missing: false })),
     ...[...new Set([...editInitialExts, ...editExts])]
-      .filter((id) => !installedExtensionIds.has(id))
+      .filter((id) => !installedExtensionIds.has(id) && extensionEngine(id) === editEngine)
       .map((id) => ({ id, name: id, missing: true })),
   ];
   const groupDefaultExtensionChoices = [
     ...extensions.map((item) => ({ ...item, missing: false })),
     ...[...new Set([...storedGroupDefaultExts, ...groupDefaultExts])]
       .filter((id) => !installedExtensionIds.has(id))
-      .map((id) => ({ id, name: id, missing: true })),
+      .map((id) => ({ id, name: id, engine: extensionEngine(id), missing: true })),
   ];
   const groupDefaultProfileCount = profiles.filter((profile) => profile.group === groupDefaultName).length;
 
@@ -2953,7 +2974,7 @@ function App() {
         tags: editForm.tags ?? "", ...fingerprintEdits,
         ...(!isCloudMode ? { customNo: editForm.customNo ?? "" } : {}),
         ...(!isCloudMode ? { randomizeFingerprintOnLaunch: editForm.randomizeFingerprintOnLaunch === "true" } : {}),
-        ...(!sameExtensionSelection(editExts, editInitialExts) && editEngine === "chromium" ? { extensions: editExts } : {}),
+        ...(!sameExtensionSelection(editExts, editInitialExts) ? { extensions: editExts } : {}),
       }, isCloudMode && !editLive ? editExpectedVersion ?? undefined : undefined);
       if (r.ok) {
         closeEdit();
@@ -3022,7 +3043,7 @@ function App() {
   };
   const doInstallWebStoreExtension = async () => {
     const source = extSource.trim();
-    if (!source) { setExtErr("Paste a Chrome Web Store URL or extension ID"); return; }
+    if (!source) { setExtErr(t("Paste a Chrome Web Store or addons.mozilla.org link")); return; }
     setExtInstallBusy(true);
     setExtErr(null);
     try {
@@ -3531,6 +3552,9 @@ function App() {
             <Icon name="profiles" /><span className="navlabel">{t("All profiles")}</span>
             <span className="cnt">{profiles.length}</span>
           </button>
+          <button type="button" className={`navitem${view === "agent" ? " active" : ""}`} data-tip={t("Agent")} title={t("Agent")} onClick={() => setView("agent")}>
+            <Icon name="agent" /><span className="navlabel">{t("Agent")}</span>
+          </button>
           {isCloudMode && sharedProfiles.length > 0 && <button type="button" className={`navitem${view === "profiles" && sharedOnly ? " active" : ""}`} title={t("Shared with me")} onClick={() => { setGroup("all"); setSharedOnly(true); setView("profiles"); }}>
             <Icon name="user" /><span className="navlabel">{t("Shared with me")}</span><span className="cnt">{sharedProfiles.length}</span>
           </button>}
@@ -3860,6 +3884,9 @@ function App() {
           active={view === "trash"} onChanged={load} folderTree={folders} />
       </>}
       <ServicesPage active={view === "services"} />
+      <AgentHost key={`agent:${appMode?.mode}:${cloudAuth?.user?.id ?? ""}:${cloudAuth?.workspace?.id ?? ""}`} active={view === "agent"}
+        cloudMode={isCloudMode} owner={cloudAuth?.workspace?.role === "owner"} wallet={storeSnapshot?.wallet ?? null} draft={agentDraft}
+        onReloadWallet={cloudStore.reload} onUseCloud={() => requestModeSwitch("cloud")} onOpenPage={() => setView("agent")} />
       {view === "profiles" ? (
       <div className="workspace">
         {(breadcrumb || sharedOnly) && <nav className="folder-breadcrumb" aria-label={t("Folder path")}>
@@ -3921,6 +3948,9 @@ function App() {
           </button>
           <button className="btn solid-danger tip" data-tip={t("Close selected browsers")} disabled={!selected.size} onClick={closeSelected}>
             <Icon name="power" className="sm" />{t("Close")}
+          </button>
+          <button className="btn" type="button" onClick={() => askAgent(profiles.filter((profile) => selected.has(profile.id)))}>
+            <Icon name="agent" className="sm" />{t("Ask agent")}
           </button>
           {(!isCloudMode || selectedEditable) && <>
           <button
@@ -3986,14 +4016,14 @@ function App() {
               <Icon name="move" className="sm" />{t("Move")}
             </button>
           </div>
-          {!isCloudMode && extensions.length > 0 && selectedProfilesSupportChromeExtensions && (
+          {!isCloudMode && bulkExtensionChoices.length > 0 && (
             <>
               <span className="vsep" />
               <div className="extctl">
                 <span className="extctl-lbl"><Icon name="puzzle" className="sm" />{t("Extension")}</span>
                 <select className="select extctl-sel" aria-label={t("Extension for bulk assignment")} disabled={!selected.size} value={bulkExt} onChange={(e) => setBulkExt(e.target.value)}>
                   <option value="">{t("choose…")}</option>
-                  {extensions.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
+                  {bulkExtensionChoices.map((x) => <option key={x.id} value={x.id}>{x.name} · {x.engine === "firefox" ? "Firefox" : "Chrome"}</option>)}
                 </select>
                 <button className="btn xs" disabled={!selected.size || !bulkExt} onClick={() => bulkAssignExt("add")}>{t("Add")}</button>
                 <button className="btn xs" disabled={!selected.size || !bulkExt} onClick={() => bulkAssignExt("remove")}>{t("Remove")}</button>
@@ -4049,7 +4079,7 @@ function App() {
                         <span className="n">{p.name}<FingerprintBadge p={p} /></span>
                         <span className="sub">
                           {p.id}
-                          <span title={p.engine === "firefox" ? "Native Firefox profile · no CDP, PDF, or Chrome extensions" : `${browserLabel(p.engine, p.chromiumRuntime)} · CDP, PDF, and Chrome extensions`}>
+                          <span title={p.engine === "firefox" ? "Native Firefox profile · Playwright, MCP, and Firefox add-ons" : `${browserLabel(p.engine, p.chromiumRuntime)} · CDP, PDF, and Chrome extensions`}>
                             {browserLabel(p.engine, p.chromiumRuntime)}
                           </span>
                           {p.running && <span className="live"><StatusDot running />running</span>}
@@ -4140,15 +4170,13 @@ function App() {
                         )}
                         {p.running ? (
                           <>
-                            {p.engine === "chromium" && <>
-                              <button
-                                className="iconbtn tip"
-                                data-tip={t("Bring to front")}
-                                aria-label={t("Bring this browser window to the front")}
-                                disabled={busy[p.id]}
-                                onClick={() => act(p.id, raiseProfile)}
-                              ><Icon name="raise" className="sm" /></button>
-                            </>}
+                            <button
+                              className="iconbtn tip"
+                              data-tip={t("Bring to front")}
+                              aria-label={t("Bring this browser window to the front")}
+                              disabled={busy[p.id]}
+                              onClick={() => act(p.id, bringToFront)}
+                            ><Icon name="raise" className="sm" /></button>
                             <button
                               className="iconbtn tip"
                               data-tip={t("Check fingerprint")}
@@ -4280,15 +4308,15 @@ function App() {
           <h2 className="sect-title">{t("Extensions")}</h2>
           {extErr && <div className="modal-err"><Icon name="alert" className="sm" />{extErr}</div>}
           <section className="settings-card">
-            <header><Icon name="puzzle" className="sm" /><h2>{t("Install from Chrome Web Store")}</h2></header>
+            <header><Icon name="puzzle" className="sm" /><h2>{t("Install from a store")}</h2></header>
             <div className="card-body">
-              <p>{t("Paste a Chrome Web Store extension link or its 32-character ID.")}</p>
+              <p>{t("Paste a Chrome Web Store or addons.mozilla.org link, or a Chrome extension's 32-character ID.")}</p>
               <form className="fld-row" onSubmit={(event) => { event.preventDefault(); void doInstallWebStoreExtension(); }}>
                 <input
                   className="input"
                   style={{ flex: 1 }}
-                  aria-label={t("Chrome Web Store URL or extension ID")}
-                  placeholder="https://chromewebstore.google.com/detail/…"
+                  aria-label={t("Chrome Web Store or addons.mozilla.org link")}
+                  placeholder="https://chromewebstore.google.com/detail/… or https://addons.mozilla.org/…"
                   value={extSource}
                   onChange={(event) => setExtSource(event.target.value)}
                 />
@@ -4298,7 +4326,7 @@ function App() {
               </form>
             </div>
           </section>
-          <p className="formnote">{t("The in-browser Store button does not work in CloakBrowser. Paste the Store link above, or upload a ZIP/CRX archive. Chrome extensions apply only to CloakBrowser profiles.")}</p>
+          <p className="formnote">{t("Store buttons inside the browser do not install for all profiles. Paste the store link above, or upload a ZIP/CRX archive or a signed XPI file. Chrome extensions load in Chromium profiles, Firefox add-ons in Firefox profiles.")}</p>
           <ol className="steps">
             <li>{t("Install the extension here. New installs stay unassigned.")}</li>
             <li>{t("Use")} <b>{t("Edit > Extensions")}</b> {isCloudMode ? t("to assign it to a profile.") : t("to assign it to a profile, or assign many at once from the roster toolbar.")}</li>
@@ -4335,7 +4363,7 @@ function App() {
                             checked={groupDefaultExts.includes(item.id)}
                             onChange={() => toggleGroupDefaultExt(item.id)}
                           />
-                          <span>{item.name}{item.missing && <span className="muted">{t(" · Not installed on this device")}</span>}</span>
+                          <span>{item.name} <span className="muted">· {item.engine === "firefox" ? "Firefox" : "Chrome"}</span>{item.missing && <span className="muted">{t(" · Not installed on this device")}</span>}</span>
                         </label>
                       ))}
                     </div>
@@ -4364,7 +4392,7 @@ function App() {
               <b>{t("No extensions yet")}</b>
               <p>{t("Uploaded extensions appear here, ready to assign to any profile.")}</p>
               <button className="btn primary" disabled={extBusy || extInstallBusy} onClick={() => extFileRef.current?.click()}>
-                <Icon name="plus" className="sm" />{extBusy ? t("Uploading…") : t("Upload ZIP/CRX")}
+                <Icon name="plus" className="sm" />{extBusy ? t("Uploading…") : t("Upload ZIP/CRX/XPI")}
               </button>
             </div>
           ) : (
@@ -4373,6 +4401,7 @@ function App() {
                 <div key={x.id} className="extrow">
                   <Icon name="puzzle" className="sm" />
                   <span className="extname">{x.name}</span>
+                  <span className="muted">{x.engine === "firefox" ? "Firefox" : "Chrome"}</span>
                   <span className="spacer" />
                   <button className="btn xs danger" onClick={() => doRemoveExtension(x.id, x.name)}>{t("Remove")}</button>
                 </div>
@@ -4383,7 +4412,7 @@ function App() {
             ref={extFileRef}
             type="file"
             multiple
-            accept=".zip,.crx,application/zip,application/x-chrome-extension"
+            accept=".zip,.crx,.xpi,application/zip,application/x-chrome-extension,application/x-xpinstall"
             style={{ display: "none" }}
             onChange={(e) => { if (e.target.files) doUploadExtensions(e.target.files); e.target.value = ""; }}
           />
@@ -4392,7 +4421,7 @@ function App() {
           <span className="spacer" />
           {extensions.length > 0 && (
             <button className="btn primary" type="button" disabled={extBusy || extInstallBusy} onClick={() => extFileRef.current?.click()}>
-              <Icon name="plus" className="sm" />{extBusy ? t("Uploading…") : t("Upload ZIP/CRX")}
+              <Icon name="plus" className="sm" />{extBusy ? t("Uploading…") : t("Upload ZIP/CRX/XPI")}
             </button>
           )}
         </footer>
@@ -5103,7 +5132,7 @@ function App() {
                     <span>{t("Browser")}</span>
                     <input value={editEngine ? browserLabel(editEngine, editChromiumRuntime) : ""} readOnly className="ro" />
                     {editEngine && <small>{editEngine === "firefox"
-                      ? t("Native Firefox profile · no CDP, PDF, or Chrome extensions.")
+                      ? t("Native Firefox profile · Playwright, MCP, and Firefox add-ons.")
                       : t("CDP, PDF, and Chrome extensions are available.")}</small>}
                     {editEngine === "chromium" && !editChromiumRuntime && <small>{t(CLOAKBROWSER_NOTE)}</small>}
                   </label>
@@ -5199,7 +5228,7 @@ function App() {
                     </label>
                     <small className="muted">{t("Regenerates the supported device configuration, screen and CPU on each fresh launch, replacing manual device overrides. Firefox also rebuilds its generated graphics and device config. Keeps cookies, OS, proxy and language. Exact computer model and every hardware field cannot be randomized. Existing logins can still identify you; changes may trigger account checks. Does not affect regular external browsers.")}</small>
                   </div>}
-                  {editEngine === "chromium" && editExtensionChoices.length > 0 && (
+                  {editExtensionChoices.length > 0 && (
                     <div className="fld">
                       <span>{t("Extensions")}</span>
                       <div className="extassign">
@@ -5214,7 +5243,7 @@ function App() {
                   )}
                   <p className="formnote">
                     {t("Cookies and locked fingerprint values are preserved. Only editable fields change.")}
-                    {editEngine === "chromium" && t(" Extensions load when the browser opens.")}
+                    {t(" Extensions load when the browser opens.")}
                   </p>
                 </>
               )}

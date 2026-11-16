@@ -773,9 +773,8 @@ export class ProfileStore {
       let changed = 0;
       for (const profile of this.listProfiles()) {
         if (profile.group !== group) continue;
-        const extensions = profile.engine === "firefox" ? [] : defaultExtensions;
-        if (sameStrings(profile.extensions ?? [], extensions)) continue;
-        profile.extensions = [...extensions];
+        if (sameStrings(profile.extensions ?? [], defaultExtensions)) continue;
+        profile.extensions = [...defaultExtensions];
         this.upsertProfile(profile);
         changed++;
       }
@@ -786,10 +785,6 @@ export class ProfileStore {
 
   /** Apply a named destination's default unless assignments were explicitly supplied. */
   applyGroupExtensionDefaults(profile: Profile, previousGroup: string | null, extensionsExplicit: boolean): void {
-    if (profile.engine === "firefox") {
-      profile.extensions = [];
-      return;
-    }
     const destination = profile.group.trim();
     if (extensionsExplicit || !destination || previousGroup?.trim() === destination) return;
     profile.extensions = this.getGroupExtensionDefaults(destination);

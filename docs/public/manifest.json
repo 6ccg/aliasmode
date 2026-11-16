@@ -1,14 +1,14 @@
 {
   "schemaVersion": 1,
-  "productVersion": "0.1.0-beta.74.mod3",
+  "productVersion": "0.1.0-beta.75.mod1",
   "openapi": {
     "path": "local-api.openapi.json",
-    "sha256": "3aec49ab2dd746666a2a1ffffd9225696b54fadd472f08636e2806e9e3754038"
+    "sha256": "2ff97f24af4e9177f48129797577897aa443eb061b6cbf64210067bda8c81f0d"
   },
   "mcpCatalogs": {
     "current-source": {
       "path": "mcp-tools/current-source.json",
-      "sha256": "95383c5d59d777a2de4fcf8f6edbe892efd771e7b277f534e6a83ec0e0a7951e"
+      "sha256": "5fe269244aa85e85fba6d81c594780b944def9091ef948741c6dbd88b20281ae"
     },
     "0.1.0-beta.42": {
       "path": "mcp-tools/0.1.0-beta.42.json",
@@ -125,6 +125,10 @@
     "0.1.0-beta.74": {
       "path": "mcp-tools/0.1.0-beta.74.json",
       "sha256": "3b9b619b3f7593f946820813331fc03ed04617b05decc1b3ba24bbf375e03a26"
+    },
+    "0.1.0-beta.75": {
+      "path": "mcp-tools/0.1.0-beta.75.json",
+      "sha256": "f7904dd9d2331a883a4e0425bc10958a01d8daa5bf51263d1f22b7c39feb2ae2"
     }
   },
   "releasedVersions": [
@@ -156,6 +160,7 @@
     "0.1.0-beta.71",
     "0.1.0-beta.72",
     "0.1.0-beta.73",
-    "0.1.0-beta.74"
+    "0.1.0-beta.74",
+    "0.1.0-beta.75"
   ]
 }

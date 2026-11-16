@@ -327,9 +327,9 @@ test("dashboard selects browser for new profiles", () => {
     expect(catalog[note]).toContain("AliasMode Chromium");
     for (const hint of hints) expect(catalog[hint]).toBeTruthy();
   }
-  expect(app).toContain('Native Firefox profile · no CDP, PDF, or Chrome extensions');
-  expect(app).toContain('{p.engine === "chromium" && <>');
-  expect(app).toContain('selectedProfilesSupportChromeExtensions');
+  expect(app).toContain('Native Firefox profile · Playwright, MCP, and Firefox add-ons');
+  expect(app).toContain("onClick={() => act(p.id, bringToFront)}");
+  expect(app).toContain('selectedEngines.has(item.engine)');
 });
 
 test("both engines offer OS choices at creation and only Chromium allows later OS edits", () => {
@@ -360,7 +360,7 @@ test("Edit shows the profile language and flags one that does not match the time
 test("running profile rows expose Bring to front in Local and Cloud mode", () => {
   expect(app).toContain('data-tip={t("Bring to front")}');
   expect(app).toContain('aria-label={t("Bring this browser window to the front")}');
-  expect(app).toContain('onClick={() => act(p.id, raiseProfile)}');
+  expect(app).toContain('onClick={() => act(p.id, bringToFront)}');
   // The running-row branch must stay mode-agnostic: raising a window is a local
   // action on a browser this machine already opened, in Cloud mode too.
   const runningBranch = app.slice(app.indexOf("{p.running ? ("), app.indexOf(") : p.mobilePersona ? ("));
@@ -718,7 +718,7 @@ test("the dashboard typeface is bundled, never fetched at runtime", () => {
 });
 
 test("New profile and Edit are instant dialogs; Scripts, Settings and Extensions are pages", () => {
-  expect(app).toContain('useState<"profiles" | "scripts" | "settings" | "extensions" | "proxies" | "trash" | "services">("profiles")');
+  expect(app).toContain('useState<"profiles" | "scripts" | "settings" | "extensions" | "proxies" | "trash" | "services" | "agent">("profiles")');
   expect(app).toContain("const [showCreate, setShowCreate] = useState(false);");
   expect(app).toContain('aria-labelledby="create-profile-title"');
   expect(app).toContain('aria-labelledby="edit-profile-title"');
@@ -997,14 +997,14 @@ test("file update results retain partial counts and per-profile failures before 
   expect(modal).toMatch(/\{!isCloudMode && <li>[^\n]*<code>custom_no<\/code>/);
 });
 
-test("the existing Extensions page installs from a Web Store URL and keeps archive upload", () => {
-  expect(app).toContain("Install from Chrome Web Store");
-  expect(app).toContain('aria-label={t("Chrome Web Store URL or extension ID")}');
+test("the existing Extensions page installs from a Chrome Web Store or addons.mozilla.org link and keeps archive upload", () => {
+  expect(app).toContain("Install from a store");
+  expect(app).toContain('aria-label={t("Chrome Web Store or addons.mozilla.org link")}');
   expect(app).toContain("installWebStoreExtension(source)");
-  expect(app).toContain("The in-browser Store button does not work in CloakBrowser");
+  expect(app).toContain("Chrome extensions load in Chromium profiles, Firefox add-ons in Firefox profiles.");
   expect(app).toContain('t("Edit > Extensions")');
-  expect(app).toContain("Upload ZIP/CRX");
-  expect(app).toContain('accept=".zip,.crx,application/zip,application/x-chrome-extension"');
+  expect(app).toContain("Upload ZIP/CRX/XPI");
+  expect(app).toContain('accept=".zip,.crx,.xpi,application/zip,application/x-chrome-extension,application/x-xpinstall"');
   expect(app).not.toContain("Chrome Web Store installs are not supported in AliasMode");
   expect(app.match(/setView\("extensions"\)/g)).toHaveLength(1);
 });
@@ -1016,7 +1016,8 @@ test("extensions can be assigned to Cloud profiles and groups without losing mis
   expect(app).toContain("new Set([...editInitialExts, ...editExts])");
   expect(app).toContain("new Set([...storedGroupDefaultExts, ...groupDefaultExts])");
   expect(app).toContain("Cloud assignments remain and will show as not installed here.");
-  expect(app).toContain("{editEngine === \"chromium\" && editExtensionChoices.length > 0 && (");
+  expect(app).toContain("{editExtensionChoices.length > 0 && (");
+  expect(app).toContain("extensionEngine(id) === editEngine");
   expect(app).toContain("Group defaults");
   expect(app).toContain("fetchGroupExtensionDefaults()");
   expect(app).toContain("setGroupExtensionDefaults(groupDefaultName, groupDefaultExts)");
@@ -1075,4 +1076,23 @@ test("Services page sits in the sidebar, can be hidden, and links only through a
   expect(services).toContain('t("Our pick")');
   expect(services).toContain('t("Sponsored")');
   expect(services).toContain('className="tools-footnote"');
+});
+
+test("Agent page sits under All profiles, takes selected profiles, and tops up through the wallet", () => {
+  const agent = readFileSync(join(import.meta.dir, "web", "agent.tsx"), "utf8");
+  expect(app).toContain('<button type="button" className={`navitem${view === "agent" ? " active" : ""}`} data-tip={t("Agent")} title={t("Agent")} onClick={() => setView("agent")}>');
+  expect(app).toContain('active={view === "agent"}');
+  expect(app).toContain("wallet={storeSnapshot?.wallet ?? null} draft={agentDraft}");
+  expect(app).toContain("onClick={() => askAgent(profiles.filter((profile) => selected.has(profile.id)))}");
+  expect(app).toContain("text: `Profiles: ${picked.map((profile) => `${profile.name} (${profile.id})`).join(\", \")}\\n\\n`");
+  // Ask agent opens the side panel in place; the panel can expand to the full page with the same chat.
+  expect(app).toContain('onOpenPage={() => setView("agent")}');
+  expect(agent).toContain("if (!active) setPanelOpen(true);");
+  expect(agent).toContain('className="agent-launcher"');
+  expect(agent).toContain("onClick={() => { setPanelOpen(false); onOpenPage(); }}");
+  // Paused for credits: owners top up in place, members are told who can.
+  expect(agent).toContain("<WalletPanel wallet={wallet} owner={owner}");
+  expect(agent).toContain('t("Ask the workspace owner to add funds.")');
+  expect(agent).toContain('conversation.pauseReason === "credits"');
+  expect(agent).toContain('t("Page content the agent reads is sent to the model you choose.")');
 });
