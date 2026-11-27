@@ -23,7 +23,7 @@
     "rust:test": "cargo test --manifest-path src-tauri/Cargo.toml",
     "i18n:locales": "bun scripts/generate-locale-registry.mjs",
     "i18n:locales:check": "bun scripts/generate-locale-registry.mjs --check",
-    "test:mod": "bun test ./random-fingerprint.test.ts ./dock-badges.test.ts ./url-routing.test.ts ./web/url-router.test.tsx && bun test ./create.test.ts ./ui.test.ts ./launcher.test.ts ./launcher-firefox.test.ts -t \"^mod:\""
+    "test:mod": "bun test ./random-fingerprint.test.ts ./dock-badges.test.ts ./url-routing.test.ts ./web/url-router.test.tsx && bun test ./create.test.ts ./ui.test.ts ./launcher.test.ts ./launcher-firefox.test.ts -t \"mod:\""
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.11.4",
