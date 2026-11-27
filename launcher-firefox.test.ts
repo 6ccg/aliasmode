@@ -14,6 +14,18 @@ const cleanup: Array<() => void> = [];
 const LABEL = "Firefox profile · #1";
 afterEach(() => { for (const run of cleanup.splice(0).reverse()) run(); });
 
+test("macOS Firefox does not receive Chromium Dock badge commands", async () => {
+  const f = fixture("darwin", "arm64");
+  let calls = 0;
+  const launcher = new Launcher({ ...f.options, setDockBadge: async () => { calls++; return "applied"; } });
+  await launcher.start(f.profile.id);
+  expect(await launcher.certifiedActive(f.profile.id)).toBe(true);
+  await launcher.reconcileOrphans();
+  await Bun.sleep(0);
+  expect(calls).toBe(0);
+  expect(await launcher.stop(f.profile.id)).toBe(true);
+});
+
 function fixture(hostPlatform: NodeJS.Platform = "win32", hostArch = "x64") {
   const root = mkdtempSync(join(tmpdir(), "aliasmode-firefox-launch-"));
   cleanup.push(() => rmSync(root, { recursive: true, force: true }));
@@ -114,7 +126,7 @@ test("Firefox launches one saved persona and retains ownership across manager re
   // The launch adds the per-profile seed, voices, devices and window label; the saved identity stays as it was.
   expect(f.config()).toEqual(firefoxLaunchConfig(f.profile, LABEL));
   expect(f.config()).toMatchObject({ "aliasmode:windowLabel": LABEL, "voices:blockIfNotDefined": true, "mediaDevices:enabled": true });
-  expect(f.prefs()).toEqual(firefoxStartupPrefs(f.profile));
+  expect(f.prefs()).toEqual(firefoxStartupPrefs(f.profile, "win32", "x64"));
   expect(f.store.getProfile(f.profile.id)!.firefox!.config).not.toHaveProperty("audio:seed");
   expect(f.store.getLaunch(f.profile.id)?.engine).toBe("firefox");
   const restarted = new Launcher(f.options);

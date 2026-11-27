@@ -49,8 +49,142 @@ import { aliasmodeChromiumExecutable } from "./aliasmode-chromium.ts";
 import { SessionRestoreError } from "./session.ts";
 import type { FingerprintSample } from "./diagnose.ts";
 import { handleUiRequest } from "./ui.ts";
+import type { DockBadgeCommand } from "./dock-badges.ts";
 
 const linuxTest = process.platform === "win32" ? test.skip : test;
+
+test("macOS Dock badges follow independent running profiles and live custom numbers without relaunch", async () => {
+  const store = seeded();
+  makeDirect(store);
+  const id = "k1d0cd11";
+  const profile = store.getProfile(id)!;
+  store.upsertProfile({ ...profile, id: "another", customNo: "002" });
+  const f = fleet();
+  const args: string[][] = [];
+  const sent: DockBadgeCommand[] = [];
+  const launcher = newLauncher(store, f, args, undefined, undefined, {
+    hostPlatform: "darwin", setDockBadge: async (command) => { sent.push(command); return "applied"; },
+  });
+  try {
+    const first = await launcher.start(id);
+    const second = await launcher.start("another");
+    await Bun.sleep(0);
+    expect(sent.map(({ label }) => label)).toEqual([String(store.getSerial(id)), "002"]);
+    expect(sent.map(({ endpoint }) => endpoint)).toEqual([first.ws, second.ws]);
+    expect(first.port).not.toBe(second.port);
+    await launcher.start(id);
+    await launcher.certifiedActive(id);
+    await Bun.sleep(0);
+    expect(sent).toHaveLength(2);
+    store.upsertProfile({ ...store.getProfile(id)!, customNo: "007", name: "private name never sent" });
+    await launcher.reconcileOrphans(); // The same path as the dashboard's next roster poll.
+    await Bun.sleep(0);
+    expect(sent.map(({ label }) => label)).toEqual([String(store.getSerial(id)), "002", "007"]);
+    expect(args).toHaveLength(2);
+    expect(launchIdentityChanged(store.getProfile(id)!, store.getLaunch(id))).toBe(false);
+    expect(args.flat().some((arg) => /dock|badge/i.test(arg))).toBe(false);
+  } finally {
+    await launcher.stop(id); await launcher.stop("another");
+    store.close(); rmSync(testDataRoot(store), { recursive: true, force: true });
+  }
+});
+
+test("macOS Dock badges restore after manager restart and endpoint change without restarting the browser", async () => {
+  const store = seeded(); makeDirect(store);
+  const id = "k1d0cd11";
+  const f = fleet();
+  const args: string[][] = [];
+  const sent: DockBadgeCommand[] = [];
+  const settings = { hostPlatform: "darwin" as const, setDockBadge: async (command: DockBadgeCommand) => { sent.push(command); return "applied" as const; } };
+  const launcher = newLauncher(store, f, args, undefined, undefined, settings);
+  const survivor = newLauncher(store, f, args, undefined, undefined, settings);
+  try {
+    const launch = await launcher.start(id);
+    await Bun.sleep(0);
+    expect(await survivor.certifiedActive(id)).toBe(true);
+    await Bun.sleep(0);
+    expect(sent).toHaveLength(2);
+    expect(args).toHaveLength(1);
+    const updatedWs = `ws://127.0.0.1:${launch.port}/devtools/browser/reconnected`;
+    f.setWs(launch.port, updatedWs);
+    expect((await survivor.start(id)).reattached).toBe(true);
+    await Bun.sleep(0);
+    expect(sent.at(-1)!.endpoint).toBe(updatedWs);
+    expect(sent).toHaveLength(3);
+    expect(args).toHaveLength(1);
+    await survivor.stop(id);
+    await survivor.start(id);
+    await Bun.sleep(0);
+    expect(sent).toHaveLength(4);
+    expect(args).toHaveLength(2);
+  } finally {
+    await survivor.stop(id);
+    store.close(); rmSync(testDataRoot(store), { recursive: true, force: true });
+  }
+});
+
+test("Dock badge failure and a hung command cannot fail or hold up a successful launch", async () => {
+  for (const mode of ["throws", "unsupported", "pending"] as const) {
+    const store = seeded(); makeDirect(store);
+    const f = fleet();
+    let command: DockBadgeCommand | undefined;
+    const launcher = newLauncher(store, f, [], undefined, undefined, {
+      hostPlatform: "darwin", setDockBadge: (value) => {
+        command = value;
+        if (mode === "throws") throw new Error("private error");
+        if (mode === "unsupported") return Promise.resolve("unsupported");
+        return new Promise(() => {});
+      },
+    });
+    try {
+      const result = await launcher.start("k1d0cd11");
+      await Bun.sleep(0);
+      expect(result.ws).toBeTruthy();
+      expect(command).toBeDefined();
+      expect(await launcher.certifiedActive("k1d0cd11")).toBe(true);
+      expect(await launcher.stop("k1d0cd11")).toBe(true);
+      expect(command!.signal.aborted).toBe(true);
+    } finally { store.close(); rmSync(testDataRoot(store), { recursive: true, force: true }); }
+  }
+});
+
+test("Dock badges skip non-macOS, headless and opted-out launches", async () => {
+  for (const settings of [
+    { hostPlatform: "linux" as const }, { hostPlatform: "win32" as const },
+    { hostPlatform: "darwin" as const, headless: true }, { hostPlatform: "darwin" as const, dockBadges: false },
+  ]) {
+    const store = seeded(); makeDirect(store);
+    let calls = 0;
+    const launcher = newLauncher(store, fleet(), [], undefined, undefined, {
+      ...settings, setDockBadge: async () => { calls++; return "applied"; },
+    });
+    try {
+      await launcher.start("k1d0cd11");
+      expect(await launcher.certifiedActive("k1d0cd11")).toBe(true);
+      await Bun.sleep(0);
+      expect(calls).toBe(0);
+    } finally { await launcher.stop("k1d0cd11"); store.close(); rmSync(testDataRoot(store), { recursive: true, force: true }); }
+  }
+});
+
+test("a replying CDP port without proven process ownership receives no Dock badge", async () => {
+  const store = seeded(); makeDirect(store);
+  const f = fleet();
+  const launcher = newLauncher(store, f, [], undefined, undefined, { hostPlatform: "darwin", dockBadges: false });
+  const running = await launcher.start("k1d0cd11");
+  let calls = 0;
+  const survivor = newLauncher(store, f, [], undefined, undefined, {
+    hostPlatform: "darwin", findOwnedBrowserPids: async () => null,
+    setDockBadge: async () => { calls++; return "applied"; },
+  });
+  try {
+    await expect(survivor.start("k1d0cd11")).rejects.toThrow("browser_launch/preflight");
+    expect(await survivor.certifiedActive("k1d0cd11")).toBe(false);
+    await Bun.sleep(0);
+    expect(calls).toBe(0);
+    expect(store.getLaunch("k1d0cd11")?.ws).toBe(running.ws);
+  } finally { await launcher.stop("k1d0cd11"); store.close(); rmSync(testDataRoot(store), { recursive: true, force: true }); }
+});
 
 /** Unit tests use fake executables, hosts, and CDP fleets. */
 class Launcher extends ProductionLauncher {

@@ -482,6 +482,7 @@ export function firefoxStartupPrefs(profile: Profile, hostPlatform?: NodeJS.Plat
   const host = hostPlatform === "win32" ? "windows" : hostPlatform === "darwin" ? "macos" : hostPlatform === "linux" ? "linux" : undefined;
   return {
     "intl.locale.requested": firefoxStartupLocale(profile),
+    ...(hostPlatform === "win32" ? { "taskbar.grouping.useprofile": true } : {}),
     "dom.webgpu.enabled": webGpu,
     "dom.webgpu.service-workers.enabled": webGpu,
     ...(os === "macos" && appleSilicon ? {} : { "gfx.blacklist.webgpu": 4 }),

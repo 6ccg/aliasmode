@@ -33,6 +33,7 @@ import { lstat, readdir, rm } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { dlopen, ptr } from "bun:ffi";
 import type { CookieRecord, LaunchInfo, LaunchPersona, Profile, ProxySpec } from "./types.ts";
+import { DockBadgeCoordinator, dockBadgeLabel, dockBadgesEnabled, type DockBadgeSetter } from "./dock-badges.ts";
 import { cookiesForEngine } from "./parse.ts";
 import type { ProfileStore } from "./store.ts";
 import { lookupProxyExitLocation, type ExitLocation } from "./geoip.ts";
@@ -598,6 +599,10 @@ export interface LauncherOptions {
   hostScale?: number;
   /** Available area of the host's primary display as Firefox pages measure it. Defaults to hostDisplayAvail(). */
   hostAvail?: { width: number; height: number };
+  /** Running macOS Chromium tiles use the existing profile number. ALIASMODE_DOCK_BADGES=0 opts out. */
+  dockBadges?: boolean;
+  /** Best-effort browser-level badge command. Injectable for tests; never affects launch success. */
+  setDockBadge?: DockBadgeSetter;
   /** Keep a Chromium 155 window no larger than the profile's screen. Injectable for tests. */
   watchWindowFit?: typeof watchWindowFit;
   /** Cross-platform kill-by-pid for the no-handle (post-restart) path. Injectable for tests. */
@@ -957,6 +962,7 @@ export class Launcher {
   private hostTimezone: string;
   private hostScale: number;
   private hostAvail: { width: number; height: number } | null;
+  private dockBadges?: DockBadgeCoordinator;
   private watchWindowFitFn?: typeof watchWindowFit;
   private windowFits = new Map<string, { stop(): void }>();
   private killPidFn: (pid: number) => Promise<void>;
@@ -1101,6 +1107,10 @@ export class Launcher {
     this.cdpReadyTimeoutMs = opts.cdpReadyTimeoutMs ?? DEFAULT_CDP_READY_TIMEOUT_MS;
     this.resetStorageOnUncleanExit = opts.resetStorageOnUncleanExit ?? false;
     this.log = opts.log ?? ((m) => console.log(`[aliasmode] ${m}`));
+    if (this.hostPlatform === "darwin" && (opts.dockBadges ?? dockBadgesEnabled(process.env.ALIASMODE_DOCK_BADGES))
+      && (!this.unsafeDisableIdentityGates || opts.setDockBadge)) {
+      this.dockBadges = new DockBadgeCoordinator(opts.setDockBadge, this.log);
+    }
   }
 
   /**
@@ -1714,6 +1724,27 @@ export class Launcher {
     if (generation && this.provenGenerations.get(profileId)?.generation !== generation) {
       this.provenGenerations.set(profileId, { generation, staleLogged: false });
     }
+    this.refreshDockBadge(profileId);
+  }
+
+  /** Cosmetic only, after existing ownership/persona gates. It is never awaited by launch. */
+  private refreshDockBadge(profileId: string): void {
+    if (!this.dockBadges || !this.isIdentityCertified(profileId) || this.stopsInFlight.has(profileId)) return;
+    const launch = this.store.getLaunch(profileId);
+    const profile = this.store.getProfile(profileId);
+    if (!launch || !profile || launch.engine === "firefox" || launch.headless !== false) return;
+    const label = dockBadgeLabel(profile.customNo, this.store.getSerial(profileId));
+    if (label === null) return;
+    this.dockBadges.update(profileId, {
+      endpoint: launch.ws, port: launch.debugPort,
+      generation: `${launch.debugPort}:${launch.startedAt}`, label,
+    }, () => {
+      const current = this.store.getLaunch(profileId);
+      const currentProfile = this.store.getProfile(profileId);
+      return !this.stopsInFlight.has(profileId) && this.isIdentityCertified(profileId)
+        && current?.startedAt === launch.startedAt && current.debugPort === launch.debugPort && current.ws === launch.ws
+        && !!currentProfile && dockBadgeLabel(currentProfile.customNo, this.store.getSerial(profileId)) === label;
+    });
   }
 
   private isIdentityCertified(profileId: string): boolean {
@@ -2078,6 +2109,7 @@ export class Launcher {
               : `profile ${profileId} already running on port ${existing.debugPort} (reattached after restart)`,
           );
           this.liveReserved.add(existing.debugPort);
+          this.refreshDockBadge(profileId);
           void this.watchSurvivorWindow(profileId);
           return {
             ws: currentWs,
@@ -2752,6 +2784,7 @@ export class Launcher {
       const running = await this.firefoxRuntime.start({
         profileId, executablePath: binary.path, executableSha256: binary.sha256,
         userDataDir, config: firefoxLaunchConfig(profile, windowLabel, fontsDir, webRtcIp, intelMac, hostAvail), proxy, headless,
+        dockBadge: this.dockBadges && !headless ? dockBadgeLabel(profile.customNo, this.store.getSerial(profileId)) ?? undefined : undefined,
         prefs: {
           ...firefoxStartupPrefs(profile, this.hostPlatform, this.hostArch),
           ...(fontsDir ? firefoxFontPackPrefs(fontsDir, this.hostPlatform) : {}),
@@ -3251,6 +3284,7 @@ export class Launcher {
     // Delete durable ownership first. If SQLite refuses the write, leave every
     // in-memory resource intact so a later retry still knows what it owns.
     this.store.clearLaunch(profileId);
+    this.dockBadges?.forget(profileId);
     this.windowFits.get(profileId)?.stop();
     if (launch.firefoxOwner) forgetFirefoxOwner(launch.firefoxOwner);
     this.autofill?.retire(profileId, launch);
@@ -3961,7 +3995,10 @@ export class Launcher {
       this.clearIdentityCertification(profileId, true);
       return false;
     }
-    if (this.isIdentityCertified(profileId)) return true;
+    if (this.isIdentityCertified(profileId)) {
+      this.refreshDockBadge(profileId);
+      return true;
+    }
     const existing = this.certificationsInFlight.get(profileId);
     if (existing) return existing;
     const target = this.store.getLaunch(profileId);
@@ -4667,6 +4704,9 @@ export class Launcher {
         }
         const operationallyVerified = liveness.cdpAlive
           && (!!trackedProc || liveness.process === "alive");
+        // Dashboard polls can pick up a changed Custom NO. on an already certified browser.
+        // Discovery alone still grants no badge access to an uncertified survivor.
+        if (operationallyVerified) this.refreshDockBadge(launch.profileId);
         if (!operationallyVerified) {
           const reason = liveness.process === "recovering"
             ? "PID recovery grace"
