@@ -16,7 +16,7 @@ test("every zh-CN key is an English string used in the web source", async () => 
     ["app.tsx", "proxies.tsx", "scripts.tsx", "trash.tsx", "proxy-offer.tsx", "store.tsx", "services.tsx", "agent.tsx", "support.tsx", "markdown.tsx", "desktop-update-result.ts"]
       .map((file) => Bun.file(new URL(`./${file}`, import.meta.url)).text()),
   );
-  const source = sources.join("\n");
+  const source = sources.join("\n").replaceAll("\r\n", "\n");
   const stale = Object.keys(tables["zh-CN"]).filter((key) => !key.startsWith("language.") && !source.includes(key));
   expect(stale).toEqual([]);
 });
