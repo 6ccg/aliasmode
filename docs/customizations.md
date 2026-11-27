@@ -11,4 +11,4 @@ The fork retains upstream networking, downloads, and updates. Installing an upst
 
 The fork publishes these changes from `main`. A `v*.mod*` tag builds both platforms and uploads the packages and checksums to a prerelease. Core checks: `bun run typecheck`, `bun run test:mod`, and `cargo test --manifest-path src-tauri/Cargo.toml --lib` after preparing desktop resources. Native macOS window/Dock behavior still needs a Mac to verify.
 
-Official beta.75 test and acceptance files are retained. The fork runs its focused tests by default. Set the Actions repository variable `RUN_OFFICIAL_TESTS=true` to include the official unit suite, or enable the official workflows in Actions when their full acceptance runs are needed.
+Official beta.76 test and acceptance files are retained. The fork runs its focused tests by default. Set the Actions repository variable `RUN_OFFICIAL_TESTS=true` to include the official unit suite, or enable the official workflows in Actions when their full acceptance runs are needed.

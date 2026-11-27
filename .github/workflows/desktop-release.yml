@@ -117,4 +117,4 @@ jobs:
           sha256sum --check SHA256SUMS-macos.txt
           gh release create "$GITHUB_REF_NAME" *.exe *.dmg *.app.tar.gz SHA256SUMS*.txt \
             --verify-tag --prerelease --title "AliasMode ${GITHUB_REF_NAME#v}" \
-            --notes 'Based on upstream beta.75 with desktop link routing, optional fingerprint rotation and profile identification. Windows x64 and macOS Apple Silicon packages are attached.'
+            --notes 'Based on upstream beta.76 with desktop link routing, optional fingerprint rotation and profile identification. Windows x64 and macOS Apple Silicon packages are attached.'
