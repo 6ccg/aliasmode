@@ -22,7 +22,8 @@
     "desktop:check": "cargo check --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc",
     "rust:test": "cargo test --manifest-path src-tauri/Cargo.toml",
     "i18n:locales": "bun scripts/generate-locale-registry.mjs",
-    "i18n:locales:check": "bun scripts/generate-locale-registry.mjs --check"
+    "i18n:locales:check": "bun scripts/generate-locale-registry.mjs --check",
+    "test:mod": "bun test ./random-fingerprint.test.ts ./dock-badges.test.ts ./url-routing.test.ts ./web/url-router.test.tsx && bun test ./create.test.ts ./ui.test.ts ./launcher.test.ts ./launcher-firefox.test.ts -t \"^mod:\""
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.11.4",

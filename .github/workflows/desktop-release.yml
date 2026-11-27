@@ -1,0 +1,120 @@
+name: Desktop release
+
+on:
+  push:
+    tags: ['v*.mod*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: windows-latest, platform: windows }
+          - { runner: macos-15, platform: macos-arm64 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.2.21
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.89
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: bun install --frozen-lockfile
+      - name: Check release version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(bun -e 'console.log(require("./package.json").version)')
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then test "$GITHUB_REF_NAME" = "v$version"; fi
+      - name: Prepare Windows runtime
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $build = (& bun -e 'import { firefoxBuildForHost, firefoxReleaseArchiveUrl } from "./firefox-install.ts"; const build = firefoxBuildForHost(); console.log(JSON.stringify({ ...build, url: firefoxReleaseArchiveUrl(build) }));') | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw "Could not read the Firefox runtime pin" }
+          $archive = Join-Path $env:RUNNER_TEMP ($build.url.Split('/')[-1])
+          Invoke-WebRequest $build.url -OutFile $archive
+          $env:ALIASMODE_FIREFOX_ARCHIVE = $archive
+          $env:ALIASMODE_FIREFOX_ARCHIVE_SHA256 = $build.archiveSha256
+          $env:ALIASMODE_FIREFOX_EXECUTABLE_SHA256 = $build.executableSha256
+          $bunArchive = Join-Path $env:RUNNER_TEMP "bun-baseline.zip"
+          $bunRoot = Join-Path $env:RUNNER_TEMP "bun-baseline"
+          Invoke-WebRequest 'https://github.com/oven-sh/bun/releases/download/bun-v1.2.21/bun-windows-x64-baseline.zip' -OutFile $bunArchive
+          if ((Get-FileHash -LiteralPath $bunArchive -Algorithm SHA256).Hash.ToLowerInvariant() -ne '23f2df1f40d963e5b6104e1a565df992aab8968da5004f460617073843b8b8be') {
+            throw "Bun baseline download checksum mismatch"
+          }
+          Expand-Archive -LiteralPath $bunArchive -DestinationPath $bunRoot
+          $baselineBun = @(Get-ChildItem -LiteralPath $bunRoot -Recurse -File -Filter bun.exe)
+          if ($baselineBun.Count -ne 1) { throw "Bun baseline executable missing" }
+          & $baselineBun[0].FullName scripts/prepare-windows-bundle.ts
+          if ($LASTEXITCODE -ne 0) { throw "Windows bundle preparation failed" }
+      - name: Build Windows installers
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          ./scripts/build-windows-installer.ps1 -Flavor full -OutputDirectory artifacts
+          ./scripts/build-windows-installer.ps1 -Flavor slim -OutputDirectory artifacts
+          Get-ChildItem artifacts/*.exe | Sort-Object Name | ForEach-Object {
+            "$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant())  $($_.Name)"
+          } | Set-Content artifacts/SHA256SUMS.txt -Encoding utf8
+      - name: Build macOS application
+        if: runner.os == 'macOS'
+        run: |
+          bun run desktop:prepare:macos
+          bunx tauri build --bundles app
+      - name: Package macOS application
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          version=$(bun -e 'console.log(require("./package.json").version)')
+          app=src-tauri/target/release/bundle/macos/AliasMode.app
+          codesign --verify --deep --strict "$app"
+          mkdir -p artifacts "$RUNNER_TEMP/dmg"
+          ditto "$app" "$RUNNER_TEMP/dmg/AliasMode.app"
+          ln -s /Applications "$RUNNER_TEMP/dmg/Applications"
+          hdiutil create -volname AliasMode -srcfolder "$RUNNER_TEMP/dmg" -format UDZO "artifacts/AliasMode_${version}_aarch64.dmg"
+          tar -czf "artifacts/AliasMode_${version}_aarch64.app.tar.gz" -C "$(dirname "$app")" AliasMode.app
+          (cd artifacts && shasum -a 256 *.dmg *.app.tar.gz > SHA256SUMS-macos.txt)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform }}
+          path: artifacts/
+          if-no-files-found: error
+          compression-level: 0
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Upload release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          cd artifacts
+          sed -i 's/\r$//' SHA256SUMS.txt
+          sha256sum --check SHA256SUMS.txt
+          sha256sum --check SHA256SUMS-macos.txt
+          gh release create "$GITHUB_REF_NAME" *.exe *.dmg *.app.tar.gz SHA256SUMS*.txt \
+            --verify-tag --prerelease --title "AliasMode ${GITHUB_REF_NAME#v}" \
+            --notes 'Based on upstream beta.75 with desktop link routing, optional fingerprint rotation and profile identification. Windows x64 and macOS Apple Silicon packages are attached.'

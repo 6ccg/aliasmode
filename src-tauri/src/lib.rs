@@ -58,19 +58,6 @@ fn windows_acceptance_browser_args(enabled: bool, debug_port: Option<&str>) -> O
     ))
 }
 
-#[cfg(windows)]
-fn windows_acceptance_webview_args() -> Option<String> {
-    windows_acceptance_browser_args(
-        matches!(
-            std::env::var("ALIASMODE_ACCEPTANCE_WEBVIEW_DEBUG").as_deref(),
-            Ok("1")
-        ),
-        std::env::var("ALIASMODE_ACCEPTANCE_WEBVIEW_DEBUG_PORT")
-            .ok()
-            .as_deref(),
-    )
-}
-
 fn allowed_external_url(url: &str) -> bool {
     ALLOWED_EXTERNAL_URLS.contains(&url)
         || proxy_offer_url(url)
@@ -813,7 +800,15 @@ pub fn run() {
                     }
                 });
             #[cfg(windows)]
-            let webview_builder = if let Some(args) = windows_acceptance_webview_args() {
+            let webview_builder = if let Some(args) = windows_acceptance_browser_args(
+                matches!(
+                    std::env::var("ALIASMODE_ACCEPTANCE_WEBVIEW_DEBUG").as_deref(),
+                    Ok("1")
+                ),
+                std::env::var("ALIASMODE_ACCEPTANCE_WEBVIEW_DEBUG_PORT")
+                    .ok()
+                    .as_deref(),
+            ) {
                 webview_builder.additional_browser_args(&args)
             } else {
                 webview_builder

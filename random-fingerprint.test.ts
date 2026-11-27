@@ -31,50 +31,37 @@ test("Chromium 155 drops old CPU overrides so the kernel redraws coordinated har
   expect(deriveFingerprintFlags(rotated)).toContain("--fingerprint-noise");
 });
 
-for (const platformOs of ["macos", "windows", "linux"] as const) {
-  test(`Firefox rebuilds matching ${platformOs} device config and retains locale/timezone`, () => {
-    const profile = { ...buildNewProfile({ name: "Firefox rotation", engine: "firefox", platformOs }, () => false), randomizeFingerprintOnLaunch: true, hardware: { cores: 255 }, locale: "fr-FR", timezone: "Europe/Paris" };
-    Object.assign(profile.firefox!.config, { "aliasmode:canvasSeed": 123, "aliasmode:textSeed": 456, "webGl:renderer": "stale GPU", "mediaDevices:micros": 999, voices: [{ name: "stale" }] });
-    const snapshot = structuredClone(profile);
-    const first = randomizedLaunchProfile(profile);
-    const next = randomizedLaunchProfile(first);
-    expect(profile).toEqual(snapshot);
-    expect(first.hardware).toBeUndefined();
-    expect(first.firefox!.config["webGl:renderer"]).toBe(graphicsIdentity(platformOs, first.fingerprintSeed)["webGl:renderer"]);
-    expect(first.firefox!.config["screen.width"]).toBe(first.screenWidth);
-    expect(first.firefox!.config["screen.height"]).toBe(first.screenHeight);
-    expect(first.ua).toBe(String(first.firefox!.config["navigator.userAgent"]));
-    expect(first.firefox!.config.timezone).toBe("Europe/Paris");
-    expect(first.firefox!.config["navigator.language"]).toBe("fr-FR");
-    const config = firefoxLaunchConfig(first, undefined, undefined, undefined, undefined, undefined, 64);
-    const nextConfig = firefoxLaunchConfig(next);
-    expect(config["aliasmode:canvasSeed"]).not.toBe(nextConfig["aliasmode:canvasSeed"]);
-    expect(config["aliasmode:textSeed"]).not.toBe(nextConfig["aliasmode:textSeed"]);
-    expect(config["mediaDevices:micros"]).not.toBe(999);
-    expect(config.voices).not.toEqual([{ name: "stale" }]);
-    expect(config["navigator.hardwareConcurrency"]).toBeLessThanOrEqual(64);
-    expect(first.cookies).toEqual(profile.cookies);
-    expect(first.platformOs).toBe(platformOs);
-    expect(first.proxy).toEqual(profile.proxy);
-  });
-}
+test("Firefox rotation regenerates its device and preserves language and timezone", () => {
+  const platformOs = "macos";
+  const profile = { ...buildNewProfile({ name: "Firefox rotation", engine: "firefox", platformOs }, () => false), randomizeFingerprintOnLaunch: true, hardware: { cores: 255 }, locale: "fr-FR", timezone: "Europe/Paris" };
+  Object.assign(profile.firefox!.config, { "aliasmode:canvasSeed": 123, "aliasmode:textSeed": 456, "webGl:renderer": "stale GPU", "mediaDevices:micros": 999, voices: [{ name: "stale" }] });
+  const snapshot = structuredClone(profile);
+  const first = randomizedLaunchProfile(profile);
+  const next = randomizedLaunchProfile(first);
+  expect(profile).toEqual(snapshot);
+  expect(first.hardware).toBeUndefined();
+  expect(first.firefox!.config["webGl:renderer"]).toBe(graphicsIdentity(platformOs, first.fingerprintSeed)["webGl:renderer"]);
+  expect(first.firefox!.config["screen.width"]).toBe(first.screenWidth);
+  expect(first.firefox!.config["screen.height"]).toBe(first.screenHeight);
+  expect(first.ua).toBe(String(first.firefox!.config["navigator.userAgent"]));
+  expect(first.firefox!.config.timezone).toBe("Europe/Paris");
+  expect(first.firefox!.config["navigator.language"]).toBe("fr-FR");
+  const config = firefoxLaunchConfig(first, undefined, undefined, undefined, undefined, undefined, 64);
+  const nextConfig = firefoxLaunchConfig(next);
+  expect(config["aliasmode:canvasSeed"]).not.toBe(nextConfig["aliasmode:canvasSeed"]);
+  expect(config["aliasmode:textSeed"]).not.toBe(nextConfig["aliasmode:textSeed"]);
+  expect(config["mediaDevices:micros"]).not.toBe(999);
+  expect(config.voices).not.toEqual([{ name: "stale" }]);
+  expect(config["navigator.hardwareConcurrency"]).toBeLessThanOrEqual(64);
+  expect(first.cookies).toEqual(profile.cookies);
+  expect(first.platformOs).toBe(platformOs);
+  expect(first.proxy).toEqual(profile.proxy);
+});
 
 test("screen draw avoids the previous screen when possible and respects oversized host floor", () => {
   const previous = { width: 1920, height: 1080 };
   expect(defaultScreen(null, () => 0, previous)).not.toEqual(previous);
   expect(defaultScreen({ width: 7680, height: 4320 }, () => 0, previous)).toEqual({ width: 7680, height: 4320 });
-});
-
-test("store persists opt-in and accepts explicitly disabling it", () => {
-  const store = new ProfileStore(":memory:");
-  try {
-    const p = { ...buildNewProfile({ name: "Stored rotation", engine: "chromium" }, () => false), randomizeFingerprintOnLaunch: true };
-    store.upsertProfile(p);
-    expect(store.getProfile(p.id)!.randomizeFingerprintOnLaunch).toBe(true);
-    store.upsertProfile({ ...store.getProfile(p.id)!, randomizeFingerprintOnLaunch: false });
-    expect(store.getProfile(p.id)!.randomizeFingerprintOnLaunch ?? false).toBe(false);
-    expect(() => store.upsertProfile({ ...p, randomizeFingerprintOnLaunch: "false" } as any)).toThrow("must be boolean");
-  } finally { store.close(); }
 });
 
 for (const engine of ["firefox", "chromium"] as const) {

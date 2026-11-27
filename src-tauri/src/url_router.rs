@@ -102,7 +102,7 @@ pub fn create_chooser(app: &tauri::App, origin: &str) -> tauri::Result<()> {
     let port = url::Url::parse(origin)
         .expect("validated sidecar origin")
         .port();
-    let builder = WebviewWindowBuilder::new(
+    let window = WebviewWindowBuilder::new(
         app,
         "chooser",
         WebviewUrl::External(
@@ -126,15 +126,8 @@ pub fn create_chooser(app: &tauri::App, origin: &str) -> tauri::Result<()> {
     .on_navigation(move |url| {
         url.scheme() == "http" && url.host_str() == Some("127.0.0.1") && url.port() == port
     })
-    .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny);
-    // The chooser creates the shared WebView2 browser process before the dashboard.
-    #[cfg(windows)]
-    let builder = if let Some(args) = crate::windows_acceptance_webview_args() {
-        builder.additional_browser_args(&args)
-    } else {
-        builder
-    };
-    let window = builder.build()?;
+    .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
+    .build()?;
     position_chooser(&window)?;
     // Tauri 2.11 exposes ns_window(), but not FullScreenAuxiliary. AppKit access
     // stays on the main thread and the borrowed NSWindow never escapes this call.

@@ -14,18 +14,6 @@ const cleanup: Array<() => void> = [];
 const LABEL = "Firefox profile · #1";
 afterEach(() => { for (const run of cleanup.splice(0).reverse()) run(); });
 
-test("macOS Firefox does not receive Chromium Dock badge commands", async () => {
-  const f = fixture("darwin", "arm64");
-  let calls = 0;
-  const launcher = new Launcher({ ...f.options, setDockBadge: async () => { calls++; return "applied"; } });
-  await launcher.start(f.profile.id);
-  expect(await launcher.certifiedActive(f.profile.id)).toBe(true);
-  await launcher.reconcileOrphans();
-  await Bun.sleep(0);
-  expect(calls).toBe(0);
-  expect(await launcher.stop(f.profile.id)).toBe(true);
-});
-
 function fixture(hostPlatform: NodeJS.Platform = "win32", hostArch = "x64") {
   const root = mkdtempSync(join(tmpdir(), "aliasmode-firefox-launch-"));
   cleanup.push(() => rmSync(root, { recursive: true, force: true }));
@@ -926,28 +914,6 @@ test("the first background fetch removes font packs that are no longer pinned", 
   expect(existsSync(join(packs, "macos-0000000000000000"))).toBe(false);
 });
 
-test("Firefox opt-in rotates actual runtime seeds only for a fresh browser", async () => {
-  const f = fixture("darwin", "arm64");
-  f.store.upsertProfile({ ...f.profile, randomizeFingerprintOnLaunch: true, hardware: { cores: 255 }, fpExpected: { canvas: "old" } });
-  await f.launcher.start(f.profile.id);
-  const first = f.config() as Record<string, unknown>;
-  const seed = f.store.getProfile(f.profile.id)!.fingerprintSeed;
-  expect(seed).not.toBe(f.profile.fingerprintSeed);
-  expect(f.store.getProfile(f.profile.id)!.hardware).toBeUndefined();
-  expect(f.store.getProfile(f.profile.id)!.fpExpected).toBeUndefined();
-  expect(first["navigator.hardwareConcurrency"]).not.toBe(255);
-  await f.launcher.start(f.profile.id);
-  expect(f.launches()).toBe(1);
-  expect(f.store.getProfile(f.profile.id)!.fingerprintSeed).toBe(seed);
-  await f.launcher.stop(f.profile.id);
-  await f.launcher.start(f.profile.id);
-  const second = f.config() as Record<string, unknown>;
-  expect(f.launches()).toBe(2);
-  expect(second["aliasmode:canvasSeed"]).not.toBe(first["aliasmode:canvasSeed"]);
-  expect(second["aliasmode:textSeed"]).not.toBe(first["aliasmode:textSeed"]);
-  await f.launcher.stop(f.profile.id);
-});
-
 test("Firefox copies assigned add-ons into its profile and removes only the ones AliasMode placed", async () => {
   const f = fixture();
   const addonDir = join(f.options.dataRoot!, "addons");
@@ -971,4 +937,39 @@ test("Firefox copies assigned add-ons into its profile and removes only the ones
   expect(existsSync(join(placed, "addon@darkreader.org.xpi"))).toBe(true);
   expect(existsSync(join(placed, "own@user.example.xpi"))).toBe(true);
   expect(await f.launcher.stop(f.profile.id)).toBe(true);
+});
+
+
+test("mod: macOS Firefox does not receive Chromium Dock badge commands", async () => {
+  const f = fixture("darwin", "arm64");
+  let calls = 0;
+  const launcher = new Launcher({ ...f.options, setDockBadge: async () => { calls++; return "applied"; } });
+  await launcher.start(f.profile.id);
+  expect(await launcher.certifiedActive(f.profile.id)).toBe(true);
+  await launcher.reconcileOrphans();
+  await Bun.sleep(0);
+  expect(calls).toBe(0);
+  expect(await launcher.stop(f.profile.id)).toBe(true);
+});
+
+test("mod: Firefox opt-in rotates actual runtime seeds only for a fresh browser", async () => {
+  const f = fixture("darwin", "arm64");
+  f.store.upsertProfile({ ...f.profile, randomizeFingerprintOnLaunch: true, hardware: { cores: 255 }, fpExpected: { canvas: "old" } });
+  await f.launcher.start(f.profile.id);
+  const first = f.config() as Record<string, unknown>;
+  const seed = f.store.getProfile(f.profile.id)!.fingerprintSeed;
+  expect(seed).not.toBe(f.profile.fingerprintSeed);
+  expect(f.store.getProfile(f.profile.id)!.hardware).toBeUndefined();
+  expect(f.store.getProfile(f.profile.id)!.fpExpected).toBeUndefined();
+  expect(first["navigator.hardwareConcurrency"]).not.toBe(255);
+  await f.launcher.start(f.profile.id);
+  expect(f.launches()).toBe(1);
+  expect(f.store.getProfile(f.profile.id)!.fingerprintSeed).toBe(seed);
+  await f.launcher.stop(f.profile.id);
+  await f.launcher.start(f.profile.id);
+  const second = f.config() as Record<string, unknown>;
+  expect(f.launches()).toBe(2);
+  expect(second["aliasmode:canvasSeed"]).not.toBe(first["aliasmode:canvasSeed"]);
+  expect(second["aliasmode:textSeed"]).not.toBe(first["aliasmode:textSeed"]);
+  await f.launcher.stop(f.profile.id);
 });

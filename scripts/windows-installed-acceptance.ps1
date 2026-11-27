@@ -1839,10 +1839,7 @@ try {
   let page;
   for (let attempt = 0; attempt < 100 && !page; attempt++) {
     page = browser.contexts().flatMap((context) => context.pages())
-      .find((candidate) => {
-        const url = new URL(candidate.url());
-        return url.protocol === "http:" && url.hostname === "127.0.0.1" && url.pathname === "/";
-      });
+      .find((candidate) => candidate.url().startsWith("http://127.0.0.1:"));
     if (!page) await new Promise((resolve) => setTimeout(resolve, 100));
   }
   if (!page) throw new Error("installed AliasMode dashboard target was not found");

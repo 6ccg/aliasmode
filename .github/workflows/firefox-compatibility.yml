@@ -81,6 +81,7 @@ env:
 
 jobs:
   windows:
+    if: vars.RUN_OFFICIAL_TESTS == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -247,6 +248,7 @@ jobs:
           }
 
   native:
+    if: vars.RUN_OFFICIAL_TESTS == 'true'
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
     strategy:

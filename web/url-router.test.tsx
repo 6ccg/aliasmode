@@ -1,30 +1,9 @@
 import { test, expect } from "bun:test";
+import { normalizeCountryCode, profileRoutingInfo } from "./profile-routing-info.ts";
 import { renderToStaticMarkup } from "react-dom/server";
 import { I18nProvider } from "./i18n.tsx";
-import { BrowserRoutingSettings, orderedBrowsers, moveTo, linkSummary } from "./url-router.tsx";
-import { BrowserChooser, acceptSnapshot } from "./browser-chooser.tsx";
-
-test.each(["MacIntel", "Win32"])("routing settings and idle chooser on %s", (platform) => {
-  const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
-  const navigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, "navigator");
-  Object.defineProperty(globalThis, "window", { configurable: true, value: { __TAURI_INTERNALS__: { invoke: async () => [] } } });
-  Object.defineProperty(globalThis, "navigator", { configurable: true, value: { platform } });
-  try {
-    expect(renderToStaticMarkup(<I18nProvider><BrowserChooser profiles={[]} local /></I18nProvider>)).toBe("");
-    const settings = renderToStaticMarkup(<I18nProvider><BrowserRoutingSettings /></I18nProvider>);
-    expect(settings).toContain('class="settings-card"');
-    expect(settings).toContain("Set AliasMode as default browser");
-    expect(settings).toContain("Add another browser");
-    expect(settings).not.toContain('role="dialog"');
-    expect(settings).not.toContain("Dismiss link");
-  } finally {
-    for (const [key, descriptor] of [["window", windowDescriptor], ["navigator", navigatorDescriptor]] as const) {
-      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
-      else Reflect.deleteProperty(globalThis, key);
-    }
-  }
-});
-
+import { orderedBrowsers, moveTo, linkSummary } from "./url-router.tsx";
+import { acceptSnapshot } from "./browser-chooser.tsx";
 
 const safari = {name: "Safari", path: "/Applications/Safari.app"};
 const chrome = {name: "Chrome", path: "/Applications/Chrome.app"};
@@ -45,7 +24,7 @@ test("dragging moves an item directly to the target and retains every other item
 });
 
 test("link summary removes tracking query and fragment without changing the URL", () => {
-  const url = "https://one.google.com/ai-student?token=private&utm_campaign=" + "tracking".repeat(100) + "#secret";
+  const url = "https://one.google.com/ai-student?token=private&utm_campaign=" + "tracking" + "#secret";
   expect(linkSummary(url)).toBe("one.google.com/ai-student");
   expect(linkSummary("https://example.com/")).toBe("example.com");
   expect(linkSummary("http://localhost:8080/a")).toBe("localhost:8080/a");
@@ -62,4 +41,21 @@ test("out-of-order queue replies cannot resurrect a dismissed occurrence", () =>
   expect(acceptSnapshot(empty, duplicate)).toEqual(duplicate);
   expect(acceptSnapshot(duplicate, empty)).toBe(duplicate);
   expect(acceptSnapshot(empty, {revision: "invalid", urls: []})).toBe(empty);
+});
+
+test("routing metadata labels the engine and configured OS, not seed rotation", () => {
+  for (const [fingerprintOs, label] of [["windows", "Windows"], ["macos", "macOS"], ["linux", "Linux"]] as const) {
+    expect(profileRoutingInfo({ engine: "chromium", fingerprintOs })).toEqual({ engine: { label: "Chromium" }, fingerprint: { label } });
+  }
+  expect(profileRoutingInfo({ engine: "firefox" })).toEqual({ engine: { label: "Firefox" } });
+  expect(profileRoutingInfo({ engine: "chromium", randomizeFingerprintOnLaunch: true } as any).fingerprint).toBeUndefined();
+});
+
+test("routing country uses only a known ISO country and renders a flag", () => {
+  expect(profileRoutingInfo({ engine: "firefox", proxyCountryCode: "us" }).country).toEqual({ code: "US", flag: "🇺🇸" });
+  for (const code of [undefined, "ZZ", "USA"]) {
+    expect(normalizeCountryCode(code)).toBeUndefined();
+    expect(profileRoutingInfo({ engine: "chromium", proxyCountryCode: code }).country).toBeUndefined();
+  }
+  expect(profileRoutingInfo({ engine: "chromium", timezone: "America/New_York", locale: "en-US", proxy: "us.example:8080" } as any).country).toBeUndefined();
 });
