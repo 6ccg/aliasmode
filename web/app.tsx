@@ -1143,6 +1143,7 @@ async function storeDesktopCloudCredentials(
 
 const BLANK_FORM = {
   name: "", engine: "chromium" as "chromium" | "firefox", chromiumRuntime: "" as "" | "aliasmode", group: "", platform: "", proxyType: "http", host: "", port: "", user: "", pass: "",
+  randomizeFingerprintOnLaunch: "false",
   screen: "", platformOs: "", customNo: "", username: "", password: "", email: "", emailPassword: "", twofa: "",
 };
 
@@ -2829,6 +2830,7 @@ function App() {
     setCreateErr(null);
     try {
       const r = await createProfile({
+        ...(!isCloudMode && !appMode?.legacyRemote ? { randomizeFingerprintOnLaunch: form.randomizeFingerprintOnLaunch === "true" } : {}),
         name: form.name,
         engine: form.engine,
         ...(form.engine === "chromium" && !appMode?.legacyRemote ? { chromiumRuntime: form.chromiumRuntime || "cloakbrowser" } : {}),
@@ -2907,6 +2909,7 @@ function App() {
           cores: p.cores ?? "",
           fingerprintSeed: p.fingerprintSeed ?? "",
           blockMedia: p.blockMedia ? "1" : "",
+          randomizeFingerprintOnLaunch: String(p.randomizeFingerprintOnLaunch === true),
         });
         setEditInitialProxy({ proxy: p.proxy, proxyType: p.proxyType || "http" });
         setEditInitialFingerprint({
@@ -3013,6 +3016,7 @@ function App() {
         email: editForm.email ?? "", emailPassword: editForm.emailPassword ?? "", twofa: editForm.twofa ?? "",
         tags: editForm.tags ?? "", blockMedia: editForm.blockMedia === "1", ...fingerprintEdits,
         ...(!isCloudMode ? { customNo: editForm.customNo ?? "" } : {}),
+        ...(!isCloudMode ? { randomizeFingerprintOnLaunch: editForm.randomizeFingerprintOnLaunch === "true" } : {}),
         ...(!sameExtensionSelection(editExts, editInitialExts) ? { extensions: editExts } : {}),
       }, isCloudMode && !editLive ? editExpectedVersion ?? undefined : undefined);
       if (r.ok) {
@@ -5113,6 +5117,14 @@ function App() {
                 </div>
               </details>
               <ProxyCheckFeedback hasProxy={createHasProxy} state={createProxyCheck} />
+              {!isCloudMode && !appMode?.legacyRemote && <div className="fld">
+                <label className="extchk">
+                  <input type="checkbox" checked={form.randomizeFingerprintOnLaunch === "true"} disabled={creating}
+                    onChange={event => setF("randomizeFingerprintOnLaunch", String(event.target.checked))} />
+                  <span>{t("Randomize fingerprint on each new launch")}</span>
+                </label>
+                <small className="muted">{t("Off by default. When enabled, supported device fields, screen and CPU change on each fresh launch, replacing manual device overrides. Cookies, OS, proxy and language stay unchanged. Existing logins can still identify you; changes may trigger account checks.")}</small>
+              </div>}
               <FingerprintSettings engine={form.engine} chromiumRuntime={appMode?.legacyRemote ? "" : appMode?.chromiumRuntime ?? form.chromiumRuntime} screen={form.screen} onScreenChange={(value) => setF("screen", value)} platformOs={form.platformOs} onPlatformOsChange={(value) => setF("platformOs", value)} />
             </div>
             <div className="modal-foot">
@@ -5299,6 +5311,15 @@ function App() {
                     <span>{t("Save proxy traffic: block images")}</span>
                   </label>
                   {editForm.blockMedia === "1" && <p className="formnote">{t("Firefox profiles also stop videos from playing by themselves. Captchas and some sites may break.")}</p>}
+                  {!isCloudMode && <div className="fld">
+                    <label className="extchk">
+                      <input type="checkbox" checked={editForm.randomizeFingerprintOnLaunch === "true"}
+                        disabled={editSaving || editLive}
+                        onChange={(event) => setEF("randomizeFingerprintOnLaunch", String(event.target.checked))} />
+                      <span>{t("Randomize fingerprint on each new launch")}</span>
+                    </label>
+                    <small className="muted">{t("Regenerates the supported device configuration, screen and CPU on each fresh launch, replacing manual device overrides. Firefox also rebuilds its generated graphics and device config. Keeps cookies, OS, proxy and language. Exact computer model and every hardware field cannot be randomized. Existing logins can still identify you; changes may trigger account checks. Does not affect regular external browsers.")}</small>
+                  </div>}
                   {editExtensionChoices.length > 0 && (
                     <div className="fld">
                       <span>{t("Extensions")}</span>

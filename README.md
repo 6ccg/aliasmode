@@ -1,5 +1,7 @@
 # AliasMode
 
+> **Desktop fork:** Windows/macOS link chooser, optional per-launch fingerprint regeneration, and Profile identification. See [usage and limitations](docs/customizations.md). Networking and updates retain upstream behavior; an upstream update can replace these customizations.
+
 AliasMode is a free, open-source [antidetect browser](https://aliasmode.com/) and local-first profile manager, with its own open-source engine, [AliasMode Firefox](https://github.com/aliasmode/aliasmode-firefox), and optional cloud synchronization for teams.
 
 > **Status:** public beta for Windows, macOS, and Linux. Download the current version from [aliasmode.com/download](https://aliasmode.com/download/).

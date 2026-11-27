@@ -336,3 +336,17 @@ test("a new identity keeps a Firefox profile's own language and timezone, never 
   expect(next.firefox!.config["navigator.language"]).toBe("de-DE");
   expect(next.firefox!.config.timezone).toBe("Europe/Berlin");
 });
+
+test("new profiles accept explicit per-launch rotation for both engines, off by default", () => {
+  for (const engine of ["chromium", "firefox"] as const) {
+    expect(buildNewProfile({ engine }, () => false).randomizeFingerprintOnLaunch).toBeUndefined();
+    for (const enabled of [true, false]) {
+      const profile = buildNewProfile({ engine, randomizeFingerprintOnLaunch: enabled }, () => false);
+      expect(profile.randomizeFingerprintOnLaunch).toBe(enabled);
+      expect(profile.engine).toBe(engine);
+    }
+  }
+  for (const invalid of ["true", "false", 1, null]) {
+    expect(() => buildNewProfile({ randomizeFingerprintOnLaunch: invalid } as any, () => false)).toThrow("must be boolean");
+  }
+});

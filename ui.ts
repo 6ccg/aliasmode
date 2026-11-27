@@ -510,6 +510,7 @@ function profileEditView(p: Profile) {
     ...(p.localeManual ? { localeManual: true } : {}),
     cores: p.hardware ? String(p.hardware.cores) : "",
     fingerprintSeed: String(p.fingerprintSeed),
+    randomizeFingerprintOnLaunch: p.randomizeFingerprintOnLaunch === true,
     cookieCount: p.cookies.length, seeded: p.seeded,
     mobilePersona: !!conversion,
     ...(conversion ? {
@@ -578,6 +579,10 @@ function applyEdits(p: Profile, set: Record<string, unknown>): boolean {
     else delete p.blockMedia;
   }
   if ("fingerprintSeed" in set) p.fingerprintSeed = parseStrictSeed(set.fingerprintSeed);
+  if ("randomizeFingerprintOnLaunch" in set) {
+    if (typeof set.randomizeFingerprintOnLaunch !== "boolean") throw new Error("randomizeFingerprintOnLaunch must be boolean");
+    p.randomizeFingerprintOnLaunch = set.randomizeFingerprintOnLaunch;
+  }
   if ("cores" in set) {
     const hardware = editedProfileHardware(p, parseStrictCores(set.cores));
     if (hardware) p.hardware = hardware;
