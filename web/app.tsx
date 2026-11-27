@@ -1,3 +1,4 @@
+import { BrowserRoutingSettings } from "./url-router.tsx";
 import { Channel } from "@tauri-apps/api/core";
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -177,6 +178,7 @@ const SETTINGS_TABS = [
   { key: "account", label: "Account" },
   { key: "team", label: "Workspace" },
   { key: "advanced", label: "Advanced" },
+  { key: "browser-routing", label: "Browser routing" },
 ] as const;
 
 type SettingsTab = (typeof SETTINGS_TABS)[number]["key"];
@@ -3536,7 +3538,7 @@ function App() {
     <ProxyStoreContext.Provider value={storeSnapshot ? openStore : null}>
     <div
       className="app"
-      onDragOver={(e) => { e.preventDefault(); if (isCloudMode) return; if (!dragging) setDragging(true); }}
+      onDragOver={(e) => { if (!Array.from(e.dataTransfer.types).includes("Files")) return; e.preventDefault(); if (isCloudMode) return; if (!dragging) setDragging(true); }}
       onDragLeave={(e) => { e.preventDefault(); if (isCloudMode) return; if (e.currentTarget === e.target) setDragging(false); }}
       onDrop={(e) => {
         e.preventDefault();
@@ -4493,7 +4495,7 @@ function App() {
       ) : view === "settings" ? (
       <div className="workspace">
         <div className="tabs" role="tablist" aria-label={t("Settings sections")}>
-          {SETTINGS_TABS.map((tab) => (
+          {SETTINGS_TABS.filter(tab => tab.key !== "browser-routing" || (!!(window as any).__TAURI_INTERNALS__?.invoke && /Mac|Win/.test(navigator.platform))).map((tab) => (
             <button
               key={tab.key}
               type="button"
@@ -4507,6 +4509,7 @@ function App() {
           ))}
         </div>
         <div className="settingspage">
+          {settingsTab === "browser-routing" && <BrowserRoutingSettings />}
           {settingsTab === "account" && (
             <>
               <h2 className="sect-title">{t("Account information")}</h2>

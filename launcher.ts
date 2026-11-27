@@ -75,6 +75,8 @@ import {
   ALIASMODE_CHROMIUM_KEEP_ALIVE,
   ALIASMODE_CHROMIUM_WINDOW_LABEL,
   chromiumComponentsDir,
+  aliasmodeChromiumExecutable,
+  cloakBrowserExecutable,
   chromiumDeviceScale,
   cloakBrowserExecutableSha256,
   ensureAliasmodeChromium,
@@ -1232,6 +1234,18 @@ export class Launcher {
   /** The desktop apps ship no CloakBrowser; they download the pinned build on first use. */
   private downloadsCloakBrowser(): boolean {
     return !!cloakBrowserExecutableSha256(this.hostPlatform, this.hostArch) && !this.binaryPath;
+  }
+
+  /** Paths for native app icons, without installing, hashing or launching a runtime. */
+  browserIconPaths(): Record<string, string> {
+    const paths: Record<string, string | undefined> = {
+      firefox: this.firefoxBinaryPath,
+      cloakbrowser: this.binaryPath || cloakBrowserExecutable(this.chromiumRuntimeRoot, this.hostPlatform, this.hostArch),
+    };
+    if (supportsChromium155Host(this.hostPlatform, this.hostArch)) {
+      paths.aliasmode = aliasmodeChromiumExecutable(this.chromiumRuntimeRoot, this.hostPlatform);
+    }
+    return Object.fromEntries(Object.entries(paths).filter((item): item is [string, string] => !!item[1] && existsSync(item[1])));
   }
 
   /** Validate the deployment pin without reading the configured binary. */

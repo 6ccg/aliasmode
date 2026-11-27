@@ -53,8 +53,8 @@ pub(crate) fn delete_cloud_credential(value: &str) -> Result<(), String> {
 }
 
 pub(crate) fn authorize(window: &WebviewWindow, state: &CredentialOrigin) -> Result<(), String> {
-    if window.label() != "main" {
-        return Err("credential bridge is available only to the main window".to_owned());
+    if !matches!(window.label(), "main" | "chooser") {
+        return Err("bridge is available only to the main and chooser windows".to_owned());
     }
     let origin = window
         .url()

@@ -38,7 +38,7 @@ import { handleTrashRequest } from "./trash.ts";
 import { importInbox, importBuffers, prepareImportBuffers, ProfileImportError, type ImportOverrides } from "./inbox.ts";
 import { hostChromiumRuntime, supportsChromium155Host } from "./aliasmode-chromium.ts";
 import { buildNewProfile, defaultProfileEngine, type NewProfileInput } from "./create.ts";
-import { firefoxGraphicsRenderer } from "./firefox-config.ts";
+import { firefoxPersonaOs, firefoxGraphicsRenderer } from "./firefox-config.ts";
 import { attachTimezones, lookupExitLocation, type ExitLocation, type FetchLike } from "./geoip.ts";
 import { localeAfterProxyExit, localeForCountry, localeForTimezone, normalizeProfileLocale } from "./profile-locale.ts";
 import { parseUpdateFile, rowsToUpdates, serializeCsv, serializeAdsTxt, serializeXlsxRows, parseStrictProxy, parseStrictResolution, parseStrictPlatformOs, parseStrictTimezone, parseStrictCustomNo, parseStrictCores, parseStrictSeed, decodeText, parseCookieText, cookiesForEngine } from "./parse.ts";
@@ -60,8 +60,10 @@ import {
 import { decodePortableProfile } from "./portable-profile.ts";
 import { isSafeProfileId, PROFILE_ID_ERROR } from "./profile-id.ts";
 import { normalizeProxySpec, proxyHostPort, proxyLegacyString, type ProxyInput } from "./proxy.ts";
-import { convertMobilePersonaToDesktop, editedProfileHardware, isMobileUserAgent } from "./fingerprint.ts";
+import { convertMobilePersonaToDesktop, editedProfileHardware, isMobileUserAgent, platformFromUA } from "./fingerprint.ts";
 import { setFirefoxScreen, syncFirefoxTimezone } from "./firefox-config.ts";
+import { createHash } from "node:crypto";
+import { normalizeCountryCode } from "./web/profile-routing-info.ts";
 import { join, resolve, dirname } from "node:path";
 import { readdirSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { validAgentAuthorization } from "./agent-control.ts";
@@ -88,6 +90,10 @@ export interface UiProfile {
   engine: "chromium" | "firefox";
   /** Present only for the opt-in Chromium 155 beta. */
   chromiumRuntime?: ChromiumRuntime;
+  /** Effective configured desktop OS; omitted when not known. Seed rotation does not change it. */
+  fingerprintOs?: "windows" | "macos" | "linux";
+  /** Recently observed proxy country, never inferred from timezone or locale. */
+  proxyCountryCode?: string;
   group: string;
   /** Account platform: "x.com", "telegram.org", or "" (none). */
   platform: string;
@@ -149,6 +155,57 @@ function openResponse(
   });
 }
 
+// This is observed metadata only: opening the chooser never starts a network check.
+// Scope it to this store and exact proxy credentials (hashed, never returned), with
+// bounded memory and a short lifetime because an exit location can change.
+const knownProxyCountries = new WeakMap<ProfileStore, Map<string, { code: string; expiresAt: number }>>();
+const PROXY_COUNTRY_TTL_MS = 15 * 60 * 1000;
+const PROXY_COUNTRY_LIMIT = 256;
+
+function proxyCountryKey(proxy: ProxySpec): string | undefined {
+  try {
+    const p = normalizeProxySpec(proxy);
+    if (!p) return undefined;
+    return createHash("sha256").update(JSON.stringify([p.type, p.host, p.port, p.user, p.pass])).digest("hex");
+  } catch {
+    // Optional metadata must never make a malformed legacy profile unloadable.
+    return undefined;
+  }
+}
+
+function rememberProxyCountry(store: ProfileStore, proxy: ProxySpec, result?: ProxyCheckResult): void {
+  const countries = knownProxyCountries.get(store) ?? new Map();
+  const key = proxyCountryKey(proxy);
+  if (!key) return;
+  countries.delete(key);
+  const code = normalizeCountryCode(result?.country);
+  if (result?.status === "working" && result.successes > 0 && !result.rotating && code) {
+    countries.set(key, { code, expiresAt: Date.now() + PROXY_COUNTRY_TTL_MS });
+  }
+  while (countries.size > PROXY_COUNTRY_LIMIT) countries.delete(countries.keys().next().value!);
+  knownProxyCountries.set(store, countries);
+}
+
+function knownProxyCountry(store: ProfileStore, proxy: ProxySpec | null): string | undefined {
+  if (!proxy) return undefined;
+  const countries = knownProxyCountries.get(store);
+  if (!countries) return undefined;
+  const key = proxyCountryKey(proxy);
+  if (!key) return;
+  const known = countries.get(key);
+  if (known && known.expiresAt > Date.now()) return known.code;
+  countries.delete(key);
+  return undefined;
+}
+
+function configuredFingerprintOs(profile: Profile): UiProfile["fingerprintOs"] {
+  // Firefox also stores its identity in config; use the runtime's own resolver.
+  const os = profileEngine(profile) === "firefox"
+    ? firefoxPersonaOs(profile)
+    : profile.platformOs || platformFromUA(profile.ua);
+  return os === "windows" || os === "macos" || os === "linux" ? os : undefined;
+}
+
 /**
  * Map the store into redacted UiProfiles joined with running state. Status comes
  * from the launches table, which is authoritative for every browser THIS manager
@@ -160,10 +217,14 @@ export function listUiProfiles(store: ProfileStore): UiProfile[] {
   const pendingCookies = store.pendingCookieCounts();
   return store.listProfiles().map((p) => {
     const l = launches.get(p.id);
+    const fingerprintOs = configuredFingerprintOs(p);
+    const proxyCountryCode = knownProxyCountry(store, p.proxy);
     return {
       id: p.id,
       name: p.name,
       engine: profileEngine(p),
+      ...(fingerprintOs ? { fingerprintOs } : {}),
+      ...(proxyCountryCode ? { proxyCountryCode } : {}),
       ...(p.chromiumRuntime ? { chromiumRuntime: p.chromiumRuntime } : {}),
       group: p.group,
       platform: p.platform ?? "",
@@ -872,6 +933,21 @@ export async function handleUiRequest(
     }
   }
 
+  if (pathname === "/ui/api/browser-chooser" && req.method === "GET") {
+    const mode = options.runtimeMode ?? options.appConfig?.read().mode ?? "local";
+    const local = mode === "local" && !remote && !options.cloudBrowser;
+    const meta = local ? store.listProfileMeta() : new Map();
+    return noStoreJson({
+      local,
+      profiles: local ? store.listProfiles().map(p => ({
+        id: p.id, name: p.name, engine: profileEngine(p), chromiumRuntime: p.chromiumRuntime,
+        fingerprintOs: configuredFingerprintOs(p), proxyCountryCode: knownProxyCountry(store, p.proxy),
+        customNo: p.customNo ?? "", serial: meta.get(p.id)?.serial ?? null,
+      })) : [],
+      iconPaths: local ? launcher.browserIconPaths() : {},
+    });
+  }
+
   if (pathname === "/ui/api/app-mode" && req.method === "GET") {
     const config = options.appConfig?.read() ?? { version: 1 as const, mode: "local" as const, localAnalytics: false };
     return Response.json({
@@ -950,8 +1026,10 @@ export async function handleUiRequest(
     }
     try {
       const result = await (options.proxyCheck ?? runProxyCheck)(proxy);
+      rememberProxyCountry(store, proxy, result);
       return noStoreJson({ ok: true, ...proxyCheckView(result) });
     } catch {
+      rememberProxyCountry(store, proxy);
       return noStoreJson({ ok: false, error: "Proxy check failed" }, 500);
     }
   }
@@ -2431,6 +2509,30 @@ export async function handleUiRequest(
       return Response.json({ ok: true, removed: pending.length });
     }
     return noStoreJson({ ok: true, cookies: pending.map(({ domain, name }) => ({ domain, name })) });
+  }
+
+  // Explicitly selected system links open in a new tab, without changing startup URLs.
+  const openUrlRoute = pathname.match(/^\/ui\/api\/profiles\/([^/]+)\/open-url$/);
+  if (openUrlRoute && req.method === "POST") {
+    const rejected = rejectUntrustedJsonMutation(req);
+    if (rejected) return rejected;
+    if (options.cloudBrowser || remote) return Response.json({ ok: false, error: "URL routing is local-only" }, { status: 400 });
+    let id: string;
+    try { id = decodeURIComponent(openUrlRoute[1]!); } catch { return Response.json({ ok: false, error: PROFILE_ID_ERROR }, { status: 400 }); }
+    if (!isSafeProfileId(id)) return Response.json({ ok: false, error: PROFILE_ID_ERROR }, { status: 400 });
+    const body = await req.json().catch(() => null);
+    let target: URL;
+    try {
+      if (typeof body?.url !== "string" || body.url.length > 16384) throw new Error();
+      target = new URL(body.url);
+      if (!["http:", "https:"].includes(target.protocol) || !target.hostname || target.username || target.password) throw new Error();
+    } catch { return Response.json({ ok: false, error: "Only HTTP and HTTPS links without embedded credentials are supported" }, { status: 400 }); }
+    if (!store.getProfile(id)) return Response.json({ ok: false, error: "no such profile" }, { status: 404 });
+    if (!await launcher.certifiedActive(id).catch(() => false)) return Response.json({ ok: false, error: "profile browser is not open" }, { status: 409 });
+    const launch = store.getLaunch(id);
+    if (!launch?.ws) return Response.json({ ok: false, error: "profile browser is not open" }, { status: 409 });
+    try { await launcher.navigate(launch.ws, [target.href], false); return Response.json({ ok: true }); }
+    catch { return Response.json({ ok: false, error: "Browser navigation failed; the link remains queued" }, { status: 500 }); }
   }
 
   // Open the AliasMode fingerprint test in a new tab of a running profile. Only these pages can be opened.

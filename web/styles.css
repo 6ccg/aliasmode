@@ -1749,3 +1749,17 @@ td.col-tags .chip + .chip { margin-left: 4px; }
 .script-profile.running { color: var(--accent-ink); }.script-profile.failed { color: var(--danger-ink); }.script-profile.succeeded { color: var(--success-ink); }
 .script-profile small { grid-column: 1 / -1; color: var(--danger-ink); }.script-profile small.warning { color: var(--warn-ink); }
 @media (max-width: 700px) { .scripts-layout { grid-template-columns: 1fr; }.scripts-head, .scripts-library-search { align-items: flex-start; flex-direction: column; }.scripts-library-search { align-items: stretch; } }
+
+/* Native application icons and sorting handles are shared with the chooser. */
+.browser-choice-icon { display: grid; place-items: center; width: 2rem; height: 2rem; flex: none; }
+.browser-choice-icon img { width: 100%; height: 100%; object-fit: contain; }
+.app-icon-fallback { display: grid; place-items: center; width: 100%; height: 100%; border-radius: var(--r-sm); color: var(--ink-soft); background: var(--surface-active); font-size: var(--t-sm); font-weight: 600; }
+.browser-drag-handle { flex: none; width: 1.5rem; padding: .25rem; border: 0; border-radius: var(--r-xs); background: transparent; color: var(--faint); cursor: grab; font: inherit; font-size: var(--t-lg); opacity: .55; }
+.browser-drag-handle:hover, .browser-drag-handle:focus-visible { opacity: 1; color: var(--muted); }
+.browser-drag-handle:active { cursor: grabbing; }
+.browser-settings-list { display: grid; gap: .375rem; margin-bottom: .5rem; }
+.browser-settings-row { display: flex; align-items: center; gap: .75rem; padding: .625rem; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); }
+.browser-settings-name { display: grid; gap: .25rem; min-width: 0; flex: 1; }
+.browser-settings-name small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: var(--t-xs); }
+.browser-sort-item[data-dragging], .browser-settings-row[data-dragging] { opacity: .4; }
+.browser-sort-item[data-drop-target], .browser-settings-row[data-drop-target] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); background: var(--accent-soft); }

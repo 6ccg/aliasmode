@@ -79,6 +79,14 @@ export function translate(
 
 export function I18nProvider({ children }: { children: ReactNode }) {
   const [language, setLanguageState] = useState<string>(readLanguage);
+  // The dashboard and reusable chooser are separate windows at the same origin.
+  useEffect(() => {
+    const sync = (event: StorageEvent) => {
+      if (event.key === LANGUAGE_KEY && isKnownLanguage(event.newValue)) setLanguageState(event.newValue);
+    };
+    window.addEventListener("storage", sync);
+    return () => window.removeEventListener("storage", sync);
+  }, []);
   // The desktop shell serves the UI from a random loopback port each launch,
   // and localStorage is origin-scoped, so a saved language never survives a
   // restart in localStorage alone. Hydrate from the server-persisted value;

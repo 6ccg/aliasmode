@@ -225,6 +225,9 @@ pub fn install_close_handler(
     sidecar: SidecarSupervisor,
     origin: String,
 ) {
+    if window.label() != "main" {
+        return;
+    }
     let state = Arc::new(CloseState::default());
     window.clone().on_window_event(move |event| {
         if let WindowEvent::CloseRequested { api, .. } = event {

@@ -27,6 +27,19 @@
 !macroend
 
 !macro NSIS_HOOK_POSTINSTALL
+  ; Register as a candidate. Windows owns the user's actual default choice.
+  WriteRegStr HKCU "Software\Classes\AliasMode.Url" "" "AliasMode web link"
+  WriteRegStr HKCU "Software\Classes\AliasMode.Url" "URL Protocol" ""
+  WriteRegStr HKCU "Software\Classes\AliasMode.Url\DefaultIcon" "" '"$INSTDIR\${MAINBINARYNAME}.exe",0'
+  WriteRegStr HKCU "Software\Classes\AliasMode.Url\shell\open\command" "" '"$INSTDIR\${MAINBINARYNAME}.exe" "%1"'
+  WriteRegStr HKCU "Software\Clients\StartMenuInternet\AliasMode" "" "AliasMode"
+  WriteRegStr HKCU "Software\Clients\StartMenuInternet\AliasMode\shell\open\command" "" '"$INSTDIR\${MAINBINARYNAME}.exe"'
+  WriteRegStr HKCU "Software\Clients\StartMenuInternet\AliasMode\Capabilities" "ApplicationName" "AliasMode"
+  WriteRegStr HKCU "Software\Clients\StartMenuInternet\AliasMode\Capabilities" "ApplicationDescription" "Choose a browser or local profile for web links"
+  WriteRegStr HKCU "Software\Clients\StartMenuInternet\AliasMode\Capabilities\URLAssociations" "http" "AliasMode.Url"
+  WriteRegStr HKCU "Software\Clients\StartMenuInternet\AliasMode\Capabilities\URLAssociations" "https" "AliasMode.Url"
+  WriteRegStr HKCU "Software\RegisteredApplications" "AliasMode" "Software\Clients\StartMenuInternet\AliasMode\Capabilities"
+  System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
   ; Earlier versions bundled CloakBrowser here. The app now downloads it into
   ; its data folder, so remove the old copy once the new files are in place. Files that
   ; a still-running browser holds stay until a later update.
@@ -77,4 +90,11 @@
   Pop $R2
   Pop $R1
   Pop $R0
+!macroend
+
+!macro NSIS_HOOK_POSTUNINSTALL
+  DeleteRegValue HKCU "Software\RegisteredApplications" "AliasMode"
+  DeleteRegKey HKCU "Software\Clients\StartMenuInternet\AliasMode"
+  DeleteRegKey HKCU "Software\Classes\AliasMode.Url"
+  System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
 !macroend

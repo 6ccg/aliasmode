@@ -3294,9 +3294,10 @@ test("Services API serves the list and remembers when the user hides the page", 
   const appConfig = new AppConfigStore(join(root, "config.json"));
   appConfig.setMode("local");
   resetServicesCache();
-  const servicesFetch = (async () => Response.json({ services: [
+  let serviceRequests = 0;
+  const servicesFetch = (async () => { serviceRequests++; return Response.json({ services: [
     { slug: "smspool", name: "SMSPool", category: "sms", description: "Numbers.", badge: "sponsored" },
-  ] })) as unknown as typeof fetch;
+  ] }); }) as unknown as typeof fetch;
   const call = (request: Request) => handleUiRequest(request, {} as any, s, null, { appConfig, servicesFetch });
 
   const listed = await call(new Request("http://x/ui/api/services"));
@@ -3305,6 +3306,7 @@ test("Services API serves the list and remembers when the user hides the page", 
     source: "live",
     services: [{ slug: "smspool", name: "SMSPool", category: "sms", description: "Numbers.", badge: "sponsored" }],
   });
+  expect(serviceRequests).toBe(1);
   resetServicesCache();
 
   const hide = (body: unknown, headers: Record<string, string> = { "content-type": "application/json" }) => call(
@@ -5600,4 +5602,63 @@ test("create profile persists rotation immediately, including false, and rejects
     expect(response!.status).toBe(400);
     expect((await response!.json()).error).toContain("must be boolean");
   } finally { store.close(); }
+});
+
+test("chooser fingerprint OS follows engine configuration and never seed rotation", () => {
+  const s = store();
+  const original = s.getProfile("k1d0cd11")!;
+  try {
+    for (const platformOs of ["windows", "macos", "linux"] as const) {
+      s.upsertProfile({ ...original, platformOs, randomizeFingerprintOnLaunch: true });
+      expect(listUiProfiles(s)[0]!.fingerprintOs).toBe(platformOs);
+    }
+    s.upsertProfile({ ...original, platformOs: undefined });
+    expect(listUiProfiles(s)[0]!.fingerprintOs).toBe("windows");
+    s.upsertProfile({ ...original, platformOs: undefined, ua: "", timezone: "Europe/London", locale: "en-GB" });
+    expect(listUiProfiles(s)[0]!.fingerprintOs).toBeUndefined();
+    expect(listUiProfiles(s)[0]!.proxyCountryCode).toBeUndefined();
+    const ff = firefoxProfile(s, "chooser-firefox");
+    s.upsertProfile({ ...ff, platformOs: undefined, ua: "", firefox: { ...ff.firefox!, config: { "navigator.platform": "MacIntel" } } });
+    expect(listUiProfiles(s).find((p) => p.id === ff.id)!.fingerprintOs).toBe("macos");
+  } finally { s.close(); }
+});
+
+test("chooser country uses only recent explicit successful checks of the exact proxy", async () => {
+  const s = store();
+  const otherStore = store();
+  const original = s.getProfile("k1d0cd11")!;
+  const working: ProxyCheckResult = { status: "working", attempts: 3, successes: 3, country: "us", rotating: false };
+  const check = async (result: ProxyCheckResult | Error, proxy = original.proxy!) => {
+    const response = await handleUiRequest(new Request("http://x/ui/api/proxy/check", {
+      method: "POST", headers: { "content-type": "application/json", origin: "http://x" },
+      body: JSON.stringify({ proxy }),
+    }), {} as any, s, null, { proxyCheck: async () => { if (result instanceof Error) throw result; return result; } });
+    expect(response!.status).toBe(result instanceof Error ? 500 : 200);
+  };
+  try {
+    expect(listUiProfiles(s)[0]!.proxyCountryCode).toBeUndefined();
+    await check(working, { ...original.proxy!, host: " 1.2.3.4 ", port: "08080" });
+    expect(listUiProfiles(s)[0]!.proxyCountryCode).toBe("US");
+    expect(listUiProfiles(otherStore)[0]!.proxyCountryCode).toBeUndefined();
+    const json = JSON.stringify(listUiProfiles(s));
+    for (const secret of ["PROXYPASS", "proxyuser", "SECRETpw", "COOKIEVAL"]) expect(json).not.toContain(secret);
+    s.upsertProfile({ ...original, proxy: { ...original.proxy!, pass: "different" } });
+    expect(listUiProfiles(s)[0]!.proxyCountryCode).toBeUndefined();
+    s.upsertProfile(original);
+    const now = Date.now;
+    try {
+      Date.now = () => now() + 16 * 60 * 1000;
+      expect(listUiProfiles(s)[0]!.proxyCountryCode).toBeUndefined();
+    } finally { Date.now = now; }
+    for (const rejected of [
+      { ...working, rotating: true }, { ...working, country: "ZZ" },
+      { ...working, status: "unstable" as const }, { ...working, status: "failed" as const },
+      new Error("check failed"),
+    ]) {
+      await check(working);
+      await check(rejected);
+      expect(listUiProfiles(s)[0]!.proxyCountryCode).toBeUndefined();
+    }
+    expect(s.getProfile(original.id)).toEqual(original);
+  } finally { s.close(); otherStore.close(); }
 });

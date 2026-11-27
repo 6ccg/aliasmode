@@ -310,6 +310,12 @@ export function aliasmodeChromiumExecutable(root: string, platform = process.pla
   return join(root, build.dir, build.executable);
 }
 
+/** Existing runtime location only; reading a chooser must never trigger a download. */
+export function cloakBrowserExecutable(root: string, platform = process.platform, arch: string = process.arch): string | undefined {
+  const spec = cloakBrowser(platform, arch);
+  return spec ? join(root, spec.dir, spec.executable) : undefined;
+}
+
 /**
  * The folder of Chromium 155's own files on Windows and Linux. Chromium loads the components it
  * finds there before it downloads them into a profile. On macOS that folder is inside the signed app.
