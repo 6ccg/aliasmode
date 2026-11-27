@@ -9,4 +9,4 @@
 
 The fork retains upstream networking, downloads, and updates. Installing an upstream update can replace these customizations. Versions use the upstream version plus `.modN`; the optional ARM64 workflow produces preview artifacts.
 
-Development uses `main` for the upstream base and `codex/customizations` for these changes. Core checks: `bun run typecheck`, `bun test ./url-routing.test.ts ./web/url-router.test.tsx ./random-fingerprint.test.ts`, and `cargo test --manifest-path src-tauri/Cargo.toml --lib` after preparing desktop resources. Native macOS window/Dock behavior still needs a Mac to verify.
+The fork publishes these changes from `main`. Core checks: `bun run typecheck`, `bun test ./url-routing.test.ts ./web/url-router.test.tsx ./random-fingerprint.test.ts`, and `cargo test --manifest-path src-tauri/Cargo.toml --lib` after preparing desktop resources. Native macOS window/Dock behavior still needs a Mac to verify.

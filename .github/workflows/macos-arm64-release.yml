@@ -2,7 +2,7 @@ name: Build macOS ARM64 preview
 
 on:
   push:
-    branches: [codex/customizations]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
